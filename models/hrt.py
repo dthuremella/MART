@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .moe import MoELayer
 
 
 def encode_onehot(labels):
@@ -290,31 +291,46 @@ class HRTTransformerLayer(nn.Module):
         self.node_attention_layer = HRTAttentionLayer(num_heads, node_dim, edge_dim, aggregation)
             
         self.dropout = nn.Dropout(dropout)
-        self.linear_net_n = nn.Sequential(
-            nn.Linear(node_dim, node_hidden_dim),
-            # nn.Dropout(dropout),
-            nn.ReLU(inplace=True),
-            nn.Linear(node_hidden_dim, node_dim),
-        )
+        self.linear_net_n = \
+            MoELayer(node_dim, 
+                node_hidden_dim, 
+                node_dim, 
+                num_experts=8)
+            # nn.Sequential(
+            #     nn.Linear(node_dim, node_hidden_dim),
+            #     # nn.Dropout(dropout),
+            #     nn.ReLU(inplace=True),
+            #     nn.Linear(node_hidden_dim, node_dim),
+            # )
         
         self.norm1_n = nn.LayerNorm(node_dim)
         self.norm2_n = nn.LayerNorm(node_dim)
         
         if self.edge_update:
-            self.linear_net1_e = nn.Sequential(
-                nn.Linear(node_dim + edge_dim, edge_hidden_dim_1),
-                # nn.Dropout(dropout),
-                nn.ReLU(inplace=True),
-                nn.Linear(edge_hidden_dim_1, edge_dim),
-            )
-            
-            self.linear_net2_e = nn.Sequential(
-                nn.Linear(edge_dim, edge_hidden_dim_2),
-                # nn.Dropout(dropout),
-                nn.ReLU(inplace=True),
-                nn.Linear(edge_hidden_dim_2, edge_dim),
-            )
-            
+            self.linear_net1_e = \
+                MoELayer(node_dim + edge_dim, 
+                    edge_hidden_dim_1, 
+                    edge_dim, 
+                    num_experts=8)
+                # nn.Sequential(
+                #     nn.Linear(node_dim + edge_dim, edge_hidden_dim_1),
+                #     # nn.Dropout(dropout),
+                #     nn.ReLU(inplace=True),
+                #     nn.Linear(edge_hidden_dim_1, edge_dim),
+                # )
+
+            self.linear_net2_e = \
+                MoELayer(edge_dim, 
+                    edge_hidden_dim_2, 
+                    edge_dim, 
+                    num_experts=8)
+                # nn.Sequential(
+                #     nn.Linear(edge_dim, edge_hidden_dim_2),
+                #     # nn.Dropout(dropout),
+                #     nn.ReLU(inplace=True),
+                #     nn.Linear(edge_hidden_dim_2, edge_dim),
+                # )
+
             self.norm1_e = nn.LayerNorm(edge_dim)
             self.norm2_e = nn.LayerNorm(edge_dim)
     

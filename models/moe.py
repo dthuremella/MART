@@ -39,7 +39,10 @@ class MoELayer(nn.Module):
         self.experts = nn.ModuleList([Expert(input_dim, hidden_dim, output_dim) for _ in range(num_experts)])
         self.gate = GatingNetwork(input_dim, num_experts)
 
-    def forward(self, x, num_experts_per_tok):
+    def forward(self, x, num_experts_per_tok=2):
+        # import pdb; pdb.set_trace()
+        x_shape = x.shape
+
         gating_scores = self.gate(x)
         topk_gating_scores, topk_indices = gating_scores.topk(num_experts_per_tok, dim=2, sorted=False)
         # Create a mask to zero out the contributions of non-topk experts
@@ -50,8 +53,21 @@ class MoELayer(nn.Module):
         gating_scores = F.normalize(gating_scores, p=1, dim=2)
         
         expert_outputs = torch.stack([expert(x) for expert in self.experts], dim=1)
+        
+        if len(x_shape) == 4:
+            eo_shape = expert_outputs.shape
+            expert_outputs = expert_outputs.reshape((eo_shape[0], eo_shape[1], 
+                                        eo_shape[2]*eo_shape[3], eo_shape[4]))
+            g_shape = gating_scores.shape
+            gating_scores = gating_scores.reshape((g_shape[0], 
+                                        g_shape[1]*g_shape[2], g_shape[3]))
+
         expert_outputs = expert_outputs.transpose(1, 2)
         output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs)
+
+        if len(x_shape) == 4:
+            o_shape = output.shape
+            output = output.reshape((o_shape[0], x_shape[1], x_shape[2], o_shape[-1]))
         return output
 
 # Define the overall Transformer model with integrated MoE
