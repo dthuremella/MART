@@ -5,6 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
+from .moe import MoELayer
 
 
 class MLP(nn.Module):
@@ -119,11 +120,19 @@ class MART(nn.Module):
         self.pair_encoders = nn.ModuleList()
         self.hyper_encoders = nn.ModuleList()
         
+        self.pair_moes_node = nn.ModuleList()
+        self.hyper_moes_node = nn.ModuleList()
+        self.pair_moes_edge = nn.ModuleList()
+        self.hyper_moes_edge = nn.ModuleList()
+        
         for i in range(args.num_layers):
             if i == 0:
                 self.pair_encoders.append(RT(**module_args))
             else:
                 self.pair_encoders.append(RTNoEdgeInit(**module_args))
+            # ADD MOE
+            self.pair_moes_node.append(MoELayer(args.model_dim, args.model_dim * 4, args.model_dim, num_experts=8))
+            self.pair_moes_edge.append(MoELayer(args.model_dim, args.model_dim * 4, args.model_dim, num_experts=8))
         
         module_args['function_type'] = args.function_type
         
@@ -132,6 +141,9 @@ class MART(nn.Module):
                 self.hyper_encoders.append(HRT(**module_args))
             else:
                 self.hyper_encoders.append(HRTNoEdgeInit(**module_args))
+            # ADD MOE
+            self.hyper_moes_node.append(MoELayer(args.model_dim, args.model_dim * 4, args.model_dim, num_experts=8))
+            self.hyper_moes_edge.append(MoELayer(args.model_dim, args.model_dim * 4, args.model_dim, num_experts=8))
         
         for i in range(args.sample_k):
             self.add_module("head_%d" % i, Decoder(args))
@@ -160,6 +172,11 @@ class MART(nn.Module):
         for i in range(self.args.num_layers):
             n_pair, e_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
             n_group, e_group, G = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
+
+            n_pair = self.pair_moes_node[i](n_pair)
+            e_pair = self.pair_moes_edge[i](e_pair)
+            n_group = self.hyper_moes_node[i](n_group)
+            e_group = self.hyper_moes_edge[i](e_group)
         
         n_final = torch.cat([n_initial, n_pair, n_group], dim=-1)
         

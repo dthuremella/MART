@@ -14,6 +14,7 @@ from utils import *
 from models.mart import MART
 from loaders.dataloader_nba import NBADataset
 
+import pickle
 
 def main():
     if args.seed >= 0:
@@ -58,17 +59,20 @@ def main():
             csv_writer.writerow([os.path.basename(args.config).split('.')[0], ade, fde])
         exit()
 
-    results = {'epochs': [], 'losses': []}
+    results = {'epochs': [], 'test_losses': [], 'test_ades': [], 'train_losses': []}
     best_val_loss = 1e8
     best_ade = 1e8
     best_epoch = 0
     print('[INFO] The seed is :',seed)
     
     for epoch in range(0, opts.num_epochs):
-        train(epoch, model, optimizer, loader_train)
+        train_loss = train(epoch, model, optimizer, loader_train)
         test_loss, ade = test(epoch, model, loader_test)
         results['epochs'].append(epoch)
-        results['losses'].append(test_loss)
+        results['test_losses'].append(test_loss)
+        results['test_ades'].append(ade)
+        results['train_losses'].append(train_loss)
+        pickle.dump(results, open('nba_results.pkl', 'wb'))
 
         state = {
             'epoch': epoch,
