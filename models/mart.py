@@ -173,10 +173,10 @@ class MART(nn.Module):
             n_pair, e_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
             n_group, e_group, G = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
 
-            n_pair = self.pair_moes_node[i](n_pair)
-            e_pair = self.pair_moes_edge[i](e_pair)
-            n_group = self.hyper_moes_node[i](n_group)
-            e_group = self.hyper_moes_edge[i](e_group)
+            n_pair = self.pair_moes_node[i](n_pair, num_experts_per_tok=2)
+            e_pair = self.pair_moes_edge[i](e_pair, num_experts_per_tok=2)
+            n_group = self.hyper_moes_node[i](n_group, num_experts_per_tok=2)
+            e_group = self.hyper_moes_edge[i](e_group, num_experts_per_tok=2)
         
         n_final = torch.cat([n_initial, n_pair, n_group], dim=-1)
         
