@@ -168,12 +168,14 @@ class MART(nn.Module):
         
         n_pair, e_pair = n_initial, None
         n_group, e_group, G = n_initial, None, None
-        scores = {'pair': [], 'group': []}
+        scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
         for i in range(self.args.num_layers):
             n_pair, e_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
             n_group, e_group, G, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
-            scores['pair'].append(scores_pair)
-            scores['group'].append(scores_group)
+            scores['pair_n'].append(scores_pair[0])
+            scores['pair_e'].append(scores_pair[1])
+            scores['group_n'].append(scores_group[0])
+            scores['group_e'].append(scores_group[1])
 
             # import pdb; pdb.set_trace()
             # n_pair = self.pair_moes_node[i](n_pair, num_experts_per_tok=2)
