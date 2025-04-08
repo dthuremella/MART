@@ -156,7 +156,8 @@ def test(epoch, model, loader):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred = model(x_abs, x_rel)
+            y_pred, scores = model(x_abs, x_rel)
+            import pdb; pdb.set_trace()
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1]].unsqueeze(2)

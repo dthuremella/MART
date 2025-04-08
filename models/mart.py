@@ -168,10 +168,12 @@ class MART(nn.Module):
         
         n_pair, e_pair = n_initial, None
         n_group, e_group, G = n_initial, None, None
-        
+        scores = {'pair': [], 'group': []}
         for i in range(self.args.num_layers):
-            n_pair, e_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
-            n_group, e_group, G = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
+            n_pair, e_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
+            n_group, e_group, G, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
+            scores['pair'].append(scores_pair)
+            scores['group'].append(scores_group)
 
             # import pdb; pdb.set_trace()
             # n_pair = self.pair_moes_node[i](n_pair, num_experts_per_tok=2)
@@ -189,5 +191,5 @@ class MART(nn.Module):
         out = torch.cat(out_list, dim=2)
         out = out.view(batch_size, num_agents, self.args.sample_k, self.args.future_length, -1)
         
-        return out
+        return out, scores
     
