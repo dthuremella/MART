@@ -73,7 +73,7 @@ def main():
         results['test_losses'].append(test_loss)
         results['test_ades'].append(ade)
         results['train_losses'].append(train_loss)
-        pickle.dump(results, open('{}_results.pkl'.format(args.dataset, 'wb')))
+        pickle.dump(results, open('{}_results.pkl'.format(args.dataset), 'wb'))
 
         state = {
             'epoch': epoch,

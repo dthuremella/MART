@@ -42,8 +42,13 @@ class MoELayer(nn.Module):
     def forward(self, x, num_experts_per_tok=2):
         # import pdb; pdb.set_trace()
         x_shape = x.shape
-
+        # import pdb; pdb.set_trace()
         gating_scores = self.gate(x)
+        if len(x_shape) == 4:
+            g_shape = gating_scores.shape
+            gating_scores = gating_scores.reshape((g_shape[0], 
+                                        g_shape[1]*g_shape[2], g_shape[3]))
+                                        
         topk_gating_scores, topk_indices = gating_scores.topk(num_experts_per_tok, dim=2, sorted=False)
         # Create a mask to zero out the contributions of non-topk experts
         mask = torch.zeros_like(gating_scores).scatter_(2, topk_indices, 1) # TODO what does scatter do?  
@@ -58,9 +63,6 @@ class MoELayer(nn.Module):
             eo_shape = expert_outputs.shape
             expert_outputs = expert_outputs.reshape((eo_shape[0], eo_shape[1], 
                                         eo_shape[2]*eo_shape[3], eo_shape[4]))
-            g_shape = gating_scores.shape
-            gating_scores = gating_scores.reshape((g_shape[0], 
-                                        g_shape[1]*g_shape[2], g_shape[3]))
 
         expert_outputs = expert_outputs.transpose(1, 2)
         output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs)

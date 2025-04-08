@@ -277,10 +277,10 @@ class HRTTransformerLayer(nn.Module):
         self,
         num_heads: int = 4,
         node_dim: int = 64,
-        node_hidden_dim: int = 128,
+        node_hidden_dim: int = 128 / 2,
         edge_dim: int = 64,
         edge_hidden_dim_1: int = 128,
-        edge_hidden_dim_2: int = 128,
+        edge_hidden_dim_2: int = 128 / 2,
         dropout: float = 0.0,
         aggregation: str = 'avg'
     ):
@@ -308,16 +308,16 @@ class HRTTransformerLayer(nn.Module):
         
         if self.edge_update:
             self.linear_net1_e = \
-                MoELayer(node_dim + edge_dim, 
-                    edge_hidden_dim_1, 
-                    edge_dim, 
-                    num_experts=8)
-                # nn.Sequential(
-                #     nn.Linear(node_dim + edge_dim, edge_hidden_dim_1),
-                #     # nn.Dropout(dropout),
-                #     nn.ReLU(inplace=True),
-                #     nn.Linear(edge_hidden_dim_1, edge_dim),
-                # )
+                nn.Sequential(
+                    nn.Linear(node_dim + edge_dim, edge_hidden_dim_1),
+                    # nn.Dropout(dropout),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(edge_hidden_dim_1, edge_dim),
+                )
+                # MoELayer(node_dim + edge_dim, 
+                #     edge_hidden_dim_1, 
+                #     edge_dim, 
+                #     num_experts=8)
 
             self.linear_net2_e = \
                 MoELayer(edge_dim, 
