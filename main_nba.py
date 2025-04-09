@@ -194,9 +194,8 @@ def test(epoch, model, loader):
             avg_meter['counter'] += (num_agents * batch_size)
     
     for k in scores:
-        scores[k] = torch.cat(scores[k], dim=2)
-    import pdb; pdb.set_trace()
-    xs, ys = torch.cat(xs), torch.cat(ys)
+        scores[k] = torch.cat(scores[k], dim=2).cpu()
+    xs, ys = torch.cat(xs).cpu(), torch.cat(ys).cpu()
     data_dump = {'scores': scores, 'x': xs, 'y': ys}
     pickle.dump(data_dump, open('viz_scores_nba.pkl', 'wb'))
 
