@@ -161,3 +161,7 @@ cython_debug/
 
 results/
 *.csv
+
+# nba dataset because it's too big
+datasets/nba/
+*.npy
