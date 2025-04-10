@@ -277,10 +277,10 @@ class HRTTransformerLayer(nn.Module):
         self,
         num_heads: int = 4,
         node_dim: int = 64,
-        node_hidden_dim: int = 128 / 2,
+        node_hidden_dim: int = 128,
         edge_dim: int = 64,
         edge_hidden_dim_1: int = 128,
-        edge_hidden_dim_2: int = 128 / 2,
+        edge_hidden_dim_2: int = 128,
         dropout: float = 0.0,
         aggregation: str = 'avg'
     ):
