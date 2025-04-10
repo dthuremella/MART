@@ -64,6 +64,7 @@ def main():
     best_epoch = 0
     print('[INFO] The seed is :',seed)
     
+    results_path = os.path.join(model_save_dir, 'sdd_results.pkl')
     for epoch in range(0, opts.num_epochs):
         train_loss = train(epoch, model, optimizer, loader_train)
         test_loss, ade = test(epoch, model, loader_test)
@@ -71,7 +72,7 @@ def main():
         results['test_losses'].append(test_loss)
         results['test_ades'].append(ade)
         results['train_losses'].append(train_loss)
-        pickle.dump(results, open('sdd_results.pkl', 'wb'))
+        pickle.dump(results, open(results_path, 'wb'))
 
         state = {
             'epoch': epoch,
