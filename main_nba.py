@@ -104,6 +104,7 @@ def train(epoch, model, optimizer, loader):
     avg_meter = {'epoch': epoch, 'loss': 0, 'counter': 0}
     loader_len = len(loader)
 
+    scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
     for i, data in enumerate(loader):
         optimizer.zero_grad()
         
@@ -116,7 +117,27 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred = model(x_abs, x_rel)
+        y_pred, score = model(x_abs, x_rel)
+        for k in score:
+            score[k] = torch.stack(score[k])
+            scores[k].append(score[k])
+
+            # load balancing loss
+            alpha = 0.01
+            maxes, argmaxes = torch.max(score[k], -1)
+            argmaxes = argmaxes.flatten(-2, -1)
+            gating_scores_full = score[k].flatten(-3, -2)
+            lb_loss = 0
+            for u in range(score[k].shape[0]):
+                for v in range(score[k].shape[1]):
+                    unq, counts = argmaxes[u][v].unique(return_counts=True)
+                    fi = counts.float() / argmaxes.shape[-1]
+                    pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
+                    fi = torch.cat((fi, torch.zeros(pi.shape[0]-fi.shape[0]).cuda())) # in case all aren't filled
+                    loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
+                    lb_loss += loss_load_balance
+            lb_loss /= (score[k].shape[0]*score[k].shape[1])
+
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -125,7 +146,8 @@ def train(epoch, model, optimizer, loader):
         y = y[:, :, None, :, :]
         
         total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
-        
+        total_loss += lb_loss
+
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
         
