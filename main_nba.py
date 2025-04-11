@@ -178,6 +178,7 @@ def train(epoch, model, optimizer, loader):
     #             loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
     #             lb_loss += loss_load_balance
     # lb_loss /= (len(scores) * scores[k].shape[0] * scores[k].shape[1])
+    # lb_loss.backward()
 
     return avg_meter['loss'] / avg_meter['counter']
 
