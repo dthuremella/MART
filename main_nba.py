@@ -123,20 +123,20 @@ def train(epoch, model, optimizer, loader):
             score[k] = torch.stack(score[k])
             scores[k].append(score[k])
 
-            # load balancing loss
-            alpha = 0.01
-            maxes, argmaxes = torch.max(score[k], -1)
-            argmaxes = argmaxes.flatten(-2, -1)
-            gating_scores_full = score[k].flatten(-3, -2)
-            for u in range(score[k].shape[0]):
-                for v in range(score[k].shape[1]):
-                    unq, counts = argmaxes[u][v].unique(return_counts=True)
-                    fi = counts.float() / argmaxes.shape[-1]
-                    pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
-                    fi = torch.cat((fi, torch.zeros(pi.shape[0]-fi.shape[0]).cuda())) # in case all aren't filled
-                    loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
-                    lb_loss += loss_load_balance
-        lb_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
+        #     # load balancing loss
+        #     alpha = 0.01
+        #     maxes, argmaxes = torch.max(score[k], -1)
+        #     argmaxes = argmaxes.flatten(-2, -1)
+        #     gating_scores_full = score[k].flatten(-3, -2)
+        #     for u in range(score[k].shape[0]):
+        #         for v in range(score[k].shape[1]):
+        #             unq, counts = argmaxes[u][v].unique(return_counts=True)
+        #             fi = counts.float() / argmaxes.shape[-1]
+        #             pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
+        #             fi = torch.cat((fi, torch.zeros(pi.shape[0]-fi.shape[0]).cuda())) # in case all aren't filled
+        #             loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
+        #             lb_loss += loss_load_balance
+        # lb_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
 
 
         if opts.pred_rel:
@@ -161,24 +161,24 @@ def train(epoch, model, optimizer, loader):
             print('[{}] Epochs: {:02d}/{:02d}| It: {:04d}/{:04d} | Loss: {:03f} | Threshold: {} | LR: {}'
                   .format(loader.dataset.mode.upper(), epoch + 1, opts.num_epochs, i + 1, loader_len, total_loss.item(), th, optimizer.param_groups[0]['lr']))
 
-    # lb_loss = 0
-    # for k in scores:
-    #     scores[k] = torch.cat(scores[k], dim=2)
-    #     # load balancing loss
-    #     alpha = 1
-    #     maxes, argmaxes = torch.max(scores[k], -1)
-    #     argmaxes = argmaxes.flatten(-2, -1)
-    #     gating_scores_full = scores[k].flatten(-3, -2)
-    #     for u in range(scores[k].shape[0]):
-    #         for v in range(scores[k].shape[1]):
-    #             unq, counts = argmaxes[u][v].unique(return_counts=True)
-    #             fi = counts.float() / argmaxes.shape[-1]
-    #             pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
-    #             fi = torch.cat((fi, torch.zeros(pi.shape[0]-fi.shape[0]).cuda())) # in case all aren't filled
-    #             loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
-    #             lb_loss += loss_load_balance
-    # lb_loss /= (len(scores) * scores[k].shape[0] * scores[k].shape[1])
-    # lb_loss.backward()
+    lb_loss = 0
+    for k in scores:
+        scores[k] = torch.cat(scores[k], dim=2)
+        # load balancing loss
+        alpha = 1
+        maxes, argmaxes = torch.max(scores[k], -1)
+        argmaxes = argmaxes.flatten(-2, -1)
+        gating_scores_full = scores[k].flatten(-3, -2)
+        for u in range(scores[k].shape[0]):
+            for v in range(scores[k].shape[1]):
+                unq, counts = argmaxes[u][v].unique(return_counts=True)
+                fi = counts.float() / argmaxes.shape[-1]
+                pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
+                fi = torch.cat((fi, torch.zeros(pi.shape[0]-fi.shape[0]).cuda())) # in case all aren't filled
+                loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
+                lb_loss += loss_load_balance
+    lb_loss /= (len(scores) * scores[k].shape[0] * scores[k].shape[1])
+    lb_loss.backward()
 
     return avg_meter['loss'] / avg_meter['counter']
 
