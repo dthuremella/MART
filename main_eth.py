@@ -44,7 +44,7 @@ def main():
     elif opts.scheduler_type == 'MultiStepLR':
         scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=opts.milestones, gamma=opts.decay_gamma)
 
-    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0])
+    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0] + args.tag)
     os.makedirs(model_save_dir, exist_ok=True)
 
     if args.test:
@@ -203,6 +203,7 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, default='eth', metavar='N', help='dataset name')
     parser.add_argument('--config', type=str, default='configs/mart_eth_reproduce.yaml', help='config path')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
+    parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
     parser.add_argument("--test", action='store_true')
 
     args = parser.parse_args()
