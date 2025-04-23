@@ -180,11 +180,11 @@ def test(epoch, model, loader):
                 y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
 
             for k in score:
-                score[k] = torch.stack(score[k])
+                score[k] = torch.stack(score[k]).cpu()
                 scores[k].append(score[k])
-            xs.append(x_abs)
-            ys.append(y)
-            ypreds.append(y_pred)
+            xs.append(x_abs.cpu())
+            ys.append(y.cpu())
+            ypreds.append(y_pred.cpu())
 
             y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
             y = np.array(y.cpu()) # B, N, T, 2
@@ -198,9 +198,9 @@ def test(epoch, model, loader):
             
             avg_meter['counter'] += (num_agents * batch_size)
 
-    for k in scores:
-        scores[k] = torch.cat(scores[k], dim=2).cpu()
-    xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
+    # for k in scores:
+    #     scores[k] = torch.cat(scores[k], dim=2).cpu()
+    # xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
     data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
     pickle.dump(data_dump, open('viz_scores_{}_full.pkl'.format(args.dataset), 'wb'))
 
