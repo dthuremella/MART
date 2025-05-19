@@ -4,6 +4,7 @@ num_heads: 8
 model_dim: 64
 hidden_dim: 128
 decoder_hidden_dim: 128
+div_by: 2
 dropout: 0.0
 sample_k: 20
 aggregation: 'avg'

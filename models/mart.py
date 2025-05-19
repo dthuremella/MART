@@ -104,10 +104,10 @@ class MART(nn.Module):
             'num_layers': 1,
             'num_heads': args.num_heads,
             'node_dim': args.model_dim,
-            'node_hidden_dim': int(args.hidden_dim / 8),
+            'node_hidden_dim': int(args.hidden_dim / args.div_by),
             'edge_dim': args.model_dim,
             'edge_hidden_dim_1': args.hidden_dim,
-            'edge_hidden_dim_2': int(args.hidden_dim / 8),
+            'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
             'dropout': args.dropout,
         }
         
