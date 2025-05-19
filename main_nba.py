@@ -147,6 +147,8 @@ def test(epoch, model, loader):
     avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
     
     with torch.no_grad():
+        scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
+        xs, ys, ypreds = [], [], []
         for _, data in enumerate(loader):
             x_abs, y = data
             x_abs, y = x_abs.cuda(), y.cuda()        
@@ -157,11 +159,18 @@ def test(epoch, model, loader):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred = model(x_abs, x_rel)
+            y_pred, score = model(x_abs, x_rel)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
                 y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
+
+            for k in score:
+                score[k] = torch.stack(score[k])
+                scores[k].append(score[k])
+            xs.append(x_abs)
+            ys.append(y)
+            ypreds.append(y_pred)
 
             y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
             y = np.array(y.cpu()) # B, N, T, 2
@@ -187,6 +196,12 @@ def test(epoch, model, loader):
             
             avg_meter['counter'] += (num_agents * batch_size)
     
+    for k in scores:
+        scores[k] = torch.cat(scores[k], dim=2).cpu()
+    xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
+    data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
+    pickle.dump(data_dump, open('viz_scores_nba_full.pkl', 'wb'))
+
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
     print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_1'] / avg_meter['counter'], avg_meter['fde_1'] / avg_meter['counter']))
