@@ -117,7 +117,7 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred = model(x_abs, x_rel)
+        y_pred, scores = model(x_abs, x_rel)
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -200,7 +200,7 @@ def test(epoch, model, loader):
         scores[k] = torch.cat(scores[k], dim=2).cpu()
     xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
     data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
-    pickle.dump(data_dump, open('viz_scores_nba_full.pkl', 'wb'))
+    pickle.dump(data_dump, open('viz_scores_nba_full_addclass.pkl', 'wb'))
 
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))

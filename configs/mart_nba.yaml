@@ -4,7 +4,7 @@ num_heads: 8
 model_dim: 64
 hidden_dim: 128
 decoder_hidden_dim: 128
-div_by: 2
+div_by: 8
 dropout: 0.0
 sample_k: 20
 aggregation: 'avg'
@@ -14,7 +14,7 @@ hyper_scales: [1, 'adaptive']
 # input/output params
 past_length: 10
 future_length: 20
-inputs: ['pos_x', 'pos_y', 'vel_x', 'vel_y']
+inputs: ['pos_x', 'pos_y', 'vel_x', 'vel_y', 'class']
 pred_rel: False
 
 # training params

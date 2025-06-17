@@ -157,6 +157,8 @@ class MART(nn.Module):
             inputs.append(x_abs)
         if 'vel_x' in self.args.inputs and 'vel_y' in self.args.inputs:
             inputs.append(x_rel)
+        class_x = torch.tensor([0,0,0,0,0,1,1,1,1,1,2]).cuda()
+        inputs.append(class_x.repeat(x_abs.shape[0],1).unsqueeze(-1).repeat(1,1,x_abs.shape[2]).unsqueeze(-1))
         
         inputs = torch.cat(inputs, dim=-1)
         inputs = inputs.view(batch_size*num_agents, length, -1).contiguous()
