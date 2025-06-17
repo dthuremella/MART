@@ -17,7 +17,7 @@ inputs: ['vel_x', 'vel_y']
 pred_rel: True
 
 # training params
-num_epochs: 300
+num_epochs: 400
 lr: 0.001
 clip_grad: null
 batch_size: 64

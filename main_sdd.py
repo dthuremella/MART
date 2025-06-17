@@ -49,12 +49,12 @@ def main():
     if not args.test:
         dataset_train = TrajectoryDataset(mode='train', scale=opts.scale, inputs=opts.inputs)
         loader_train = torch.utils.data.DataLoader(dataset_train, collate_fn=my_collate,
-                                                    batch_size=opts.batch_size, num_workers=0, 
+                                                    batch_size=opts.batch_size, num_workers=8, 
                                                     shuffle=True, drop_last=True)
         
     dataset_test = TrajectoryDataset(mode='test', scale=opts.scale, inputs=opts.inputs)
     loader_test = torch.utils.data.DataLoader(dataset_test, collate_fn=my_collate,
-                                                batch_size=opts.batch_size, num_workers=0,
+                                                batch_size=opts.batch_size, num_workers=8,
                                                 shuffle=False)
 
     model = MART(opts).cuda()
@@ -154,13 +154,13 @@ def train(epoch, model, optimizer, loader):
         y = y[:, :, None, :, :]
         
         mask = x_abs[:,:,0,-1]
-        total_loss = torch.mean(torch.min(      # minADE
+        total_loss = torch.sum(torch.min(      # minADE
                             torch.mean(torch.norm(y_pred - y, dim=-1), dim=3),
                             dim=2)[0] * mask    # mask out loss for invalid
                         ) 
         
-        avg_meter['loss'] += total_loss.item() * batch_size * num_agents
-        avg_meter['counter'] += (batch_size * num_agents)
+        avg_meter['loss'] += total_loss.item()
+        avg_meter['counter'] += mask.sum()
 
         if is_first_loss:
             loss = total_loss
@@ -204,7 +204,7 @@ def test(epoch, model, loader):
             y_pred, score = model(x_abs, x_rel)
 
             if opts.pred_rel:
-                cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
+                cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
                 y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
 
             for k in score:
@@ -218,14 +218,14 @@ def test(epoch, model, loader):
             y = np.array(y.cpu()) # B, N, T, 2
             y = y[:, :, None, :, :]
             
-            mask = x_abs[:,:,0,-1]
-            ade = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2) * mask) * (num_agents * batch_size)
-            fde = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2) * mask) * (num_agents * batch_size)
+            mask = np.array(x_abs[:,:,0,-1].cpu())
+            ade = np.sum(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2) * mask)
+            fde = np.sum(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2) * mask)
                         
             avg_meter['ade'] += ade
             avg_meter['fde'] += fde
             
-            avg_meter['counter'] += (num_agents * batch_size)
+            avg_meter['counter'] += mask.sum()
     
     avg_meter['ade'] /= opts.scale
     avg_meter['fde'] /= opts.scale
