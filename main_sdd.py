@@ -15,6 +15,27 @@ from models.mart import MART
 from loaders.dataloader_sdd import TrajectoryDataset
 import pickle
 
+def my_collate(batch):
+    '''
+    Pads batch of variable length
+    '''
+    batch_x = []
+    batch_y = []
+    for t in batch:
+        x, y = t
+        batch_x.append(x)
+        batch_y.append(y)
+
+    ## pad sequences with zeros  
+    batch_x_padded = torch.nn.utils.rnn.pad_sequence(batch_x, batch_first=True)
+    batch_y_padded = torch.nn.utils.rnn.pad_sequence(batch_y, batch_first=True)
+
+    ## add mask
+    pad_ones = torch.nn.utils.rnn.pad_sequence(batch_x, batch_first=True, padding_value=1)
+    mask = (batch_x_padded - pad_ones) + 1    ## ones for where there's values
+    batch_x_mask = torch.cat((batch_x_padded, mask[:,:,:,:1]), dim=-1)
+    return batch_x_mask, batch_y_padded
+
 def main():
     if args.seed >= 0:
         seed = args.seed
@@ -27,10 +48,14 @@ def main():
 
     if not args.test:
         dataset_train = TrajectoryDataset(mode='train', scale=opts.scale, inputs=opts.inputs)
-        loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=1, shuffle=True, num_workers=8, drop_last=True)
+        loader_train = torch.utils.data.DataLoader(dataset_train, collate_fn=my_collate,
+                                                    batch_size=opts.batch_size, num_workers=0, 
+                                                    shuffle=True, drop_last=True)
         
     dataset_test = TrajectoryDataset(mode='test', scale=opts.scale, inputs=opts.inputs)
-    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=1, shuffle=False, num_workers=8)
+    loader_test = torch.utils.data.DataLoader(dataset_test, collate_fn=my_collate,
+                                                batch_size=opts.batch_size, num_workers=0,
+                                                shuffle=False)
 
     model = MART(opts).cuda()
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
@@ -120,15 +145,19 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred = model(x_abs, x_rel)
+        y_pred, score = model(x_abs, x_rel)
 
         if opts.pred_rel:
-            cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
+            cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
             y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
             
         y = y[:, :, None, :, :]
         
-        total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
+        mask = x_abs[:,:,0,-1]
+        total_loss = torch.mean(torch.min(      # minADE
+                            torch.mean(torch.norm(y_pred - y, dim=-1), dim=3),
+                            dim=2)[0] * mask    # mask out loss for invalid
+                        ) 
         
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
@@ -189,8 +218,9 @@ def test(epoch, model, loader):
             y = np.array(y.cpu()) # B, N, T, 2
             y = y[:, :, None, :, :]
             
-            ade = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
-            fde = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            mask = x_abs[:,:,0,-1]
+            ade = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2) * mask) * (num_agents * batch_size)
+            fde = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2) * mask) * (num_agents * batch_size)
                         
             avg_meter['ade'] += ade
             avg_meter['fde'] += fde

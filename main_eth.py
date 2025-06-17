@@ -29,10 +29,10 @@ def main():
 
     if not args.test:
         dataset_train = TrajectoryDataset(args, os.path.join(data_root, 'train'), obs_len=opts.past_length, pred_len=opts.future_length, skip=1)
-        loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=1, shuffle=True, num_workers=8, drop_last=True)
+        loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=opts.batch_size, shuffle=True, num_workers=8, drop_last=True)
         
     dataset_test = TrajectoryDataset(args, os.path.join(data_root, 'test'), obs_len=opts.past_length, pred_len=opts.future_length, skip=1)
-    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=1, shuffle=False, num_workers=8)
+    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, shuffle=False, num_workers=8)
 
     model = MART(opts).cuda()
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
