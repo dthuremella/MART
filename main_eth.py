@@ -253,11 +253,11 @@ if __name__ == "__main__":
 
     opts = load_config(args.config)
     if args.dataset == 'eth' or args.dataset == 'univ':
-        opts.lr = 0.001
+        opts.lr *= 1
     elif args.dataset == 'zara1' or args.dataset == 'zara2':
-        opts.lr = 0.0012
+        opts.lr *= 1.2
     else:
-        opts.lr = 0.0018
+        opts.lr *= 1.8
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     main()
