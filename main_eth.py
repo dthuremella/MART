@@ -105,7 +105,8 @@ def main():
             'optimizer': optimizer.state_dict()
         }
         
-        if test_loss < best_val_loss:
+        # if test_loss < best_val_loss:
+        if ade < best_ade:
             best_val_loss = test_loss
             best_ade = ade
             best_epoch = epoch
