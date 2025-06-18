@@ -215,6 +215,7 @@ def test(epoch, model, loader):
             y = np.array(y.cpu()) # B, N, T, 2
             y = y[:, :, None, :, :]
             
+            mask = np.array(x_abs[:,:,0,-1].cpu())
             ade = np.sum(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2) * mask)
             fde = np.sum(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2) * mask)
                         
@@ -252,11 +253,11 @@ if __name__ == "__main__":
 
     opts = load_config(args.config)
     if args.dataset == 'eth' or args.dataset == 'univ':
-        opts.lr = 0.001
+        opts.lr *= 1
     elif args.dataset == 'zara1' or args.dataset == 'zara2':
-        opts.lr = 0.0012
+        opts.lr *= 1.2
     else:
-        opts.lr = 0.0018
+        opts.lr *= 1.8
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     main()

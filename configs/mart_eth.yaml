@@ -17,10 +17,10 @@ inputs: ['vel_x', 'vel_y', 'mask']
 pred_rel: True
 
 # training params
-num_epochs: 400
-lr: 0.001
+num_epochs: 300
+lr: 0.01
 clip_grad: null
-batch_size: 64
+batch_size: 20
 scheduler_type: MultiStepLR
 milestones: [100, 200]
 decay_gamma: 0.5
