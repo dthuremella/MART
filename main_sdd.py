@@ -149,9 +149,7 @@ def train(epoch, model, optimizer, loader):
         
         y_pred, score = model(x_abs, x_rel)
         lb_loss = 0
-        import pdb; pdb.set_trace()
         if args.load_balance:
-            print('[INFO] Load balancing loss enabled')
             for k in score:
                 score[k] = torch.stack(score[k])
                 scores[k].append(score[k])
