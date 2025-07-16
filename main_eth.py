@@ -202,7 +202,7 @@ def test(epoch, model, loader):
             y_pred, score = model(x_abs, x_rel)
 
             if opts.pred_rel:
-                cur_pos = x_abs[:, :, [-1], 2:].unsqueeze(2)
+                cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
                 y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
 
             for k in score:
