@@ -132,6 +132,7 @@ def train(epoch, model, optimizer, loader):
     batch_count, divider = 0, 0
     is_first_loss = True
 
+    scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
     for i, data in enumerate(loader):
         optimizer.zero_grad()
         batch_count += 1
@@ -147,6 +148,28 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
         y_pred, score = model(x_abs, x_rel)
+        lb_loss = 0
+        if args.load_balance:
+            print('[INFO] Load balancing loss enabled')
+            for k in score:
+                score[k] = torch.stack(score[k])
+                scores[k].append(score[k])
+
+                # load balancing loss
+                alpha = 0.01
+                maxes, argmaxes = torch.max(score[k], -1)
+                argmaxes = argmaxes.flatten(-2, -1)
+                gating_scores_full = score[k].flatten(-3, -2)
+                for u in range(score[k].shape[0]):
+                    for v in range(score[k].shape[1]):
+                        unq, counts = argmaxes[u][v].unique(return_counts=True)
+                        fi = counts.float() / argmaxes.shape[-1]
+                        pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
+                        fi = torch.cat((fi, torch.zeros(pi.shape[0]-fi.shape[0]).cuda())) # in case all aren't filled
+                        loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
+                        lb_loss += loss_load_balance
+            lb_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
+
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
@@ -156,7 +179,8 @@ def train(epoch, model, optimizer, loader):
         
         mask = x_abs[:,:,0,-1]
         total_loss = torch.sum(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0] * mask) # for all agents
-        
+        total_loss += lb_loss
+
         avg_meter['loss'] += total_loss.item()
         avg_meter['counter'] += mask.sum()
 
@@ -246,6 +270,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
     parser.add_argument("--test", action='store_true')
+    parser.add_argument("--load_balance", action='store_true')
 
     args = parser.parse_args()
 
