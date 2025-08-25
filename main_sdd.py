@@ -283,6 +283,8 @@ if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     opts = load_config(args.config)
+    if args.test:
+        opts.batch_size = 1
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     main()
