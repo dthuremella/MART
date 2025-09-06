@@ -104,10 +104,10 @@ class MART(nn.Module):
             'num_layers': 1,
             'num_heads': args.num_heads,
             'node_dim': args.model_dim,
-            'node_hidden_dim': int(args.hidden_dim / 8),
+            'node_hidden_dim': int(args.hidden_dim / args.div_by),
             'edge_dim': args.model_dim,
             'edge_hidden_dim_1': args.hidden_dim,
-            'edge_hidden_dim_2': int(args.hidden_dim / 8),
+            'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
             'dropout': args.dropout,
         }
         
@@ -168,15 +168,20 @@ class MART(nn.Module):
         
         n_pair, e_pair = n_initial, None
         n_group, e_group, G = n_initial, None, None
-        scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
+        scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': [],
+                    'pair_n_x': [], 'pair_e_x': [], 'group_n_x': [], 'group_e_x': []}
         for i in range(self.args.num_layers):
-            n_pair, e_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
-            n_group, e_group, G, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
+            n_pair, e_pair, scores_pair, x_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
+            n_group, e_group, G, scores_group, x_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
             scores['pair_n'].append(scores_pair[0])
             scores['pair_e'].append(scores_pair[1])
             scores['group_n'].append(scores_group[0])
             scores['group_e'].append(scores_group[1])
 
+            scores['pair_n_x'].append(x_pair[0])
+            scores['pair_e_x'].append(x_pair[1])
+            scores['group_n_x'].append(x_group[0])
+            scores['group_e_x'].append(x_group[1])
             # import pdb; pdb.set_trace()
             # n_pair = self.pair_moes_node[i](n_pair, num_experts_per_tok=2)
             # e_pair = self.pair_moes_edge[i](e_pair, num_experts_per_tok=2)

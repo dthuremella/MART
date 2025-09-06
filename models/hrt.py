@@ -225,13 +225,18 @@ class HRT(nn.Module):
         
         scores_n = []
         scores_e = []
+        x_n = []
+        x_e = []
         for layer in self.layers:
-            node_features, edge_features, score = layer(node_features, edge_features, G)
+            node_features, edge_features, score, x = layer(node_features, edge_features, G)
             scores_n.append(score[0])
             scores_e.append(score[1])
+            x_n.append(x[0])
+            x_e.append(x[1])
         
         if return_edge:
-            return node_features, edge_features, G, (torch.stack(scores_n), torch.stack(scores_e))
+            return (node_features, edge_features, G, 
+            (torch.stack(scores_n), torch.stack(scores_e)), (torch.stack(x_n), torch.stack(x_e)))
         
         return node_features, G
 
@@ -269,13 +274,18 @@ class HRTNoEdgeInit(nn.Module):
     def forward(self, node_features, edge_features, G, return_edge=False):
         scores_n = []
         scores_e = []
+        x_n = []
+        x_e = []
         for layer in self.layers:
-            node_features, edge_features, score = layer(node_features, edge_features, G)
+            node_features, edge_features, score, x = layer(node_features, edge_features, G)
             scores_n.append(score[0])
             scores_e.append(score[1])
+            x_n.append(x[0])
+            x_e.append(x[1])
         
         if return_edge:
-            return node_features, edge_features, G, (torch.stack(scores_n), torch.stack(scores_e))
+            return (node_features, edge_features, G, 
+            (torch.stack(scores_n), torch.stack(scores_e)), (torch.stack(x_n), torch.stack(x_e)))
             
         return node_features, G
 
@@ -347,7 +357,7 @@ class HRTTransformerLayer(nn.Module):
         node_features = node_features + self.dropout(node_attn_out)
         node_features = self.norm1_n(node_features)
         
-        linear_out, scores_e = self.linear_net_n(node_features)
+        linear_out, scores_e, x_e = self.linear_net_n(node_features)
         node_features = node_features + self.dropout(linear_out)
         node_features = self.norm2_n(node_features)
         
@@ -363,11 +373,11 @@ class HRTTransformerLayer(nn.Module):
             edge_features = edge_features + self.dropout(edge_features)
             edge_features = self.norm1_e(edge_features)
             
-            edge_features, scores_n = self.linear_net2_e(edge_features)
+            edge_features, scores_n, x_n = self.linear_net2_e(edge_features)
             edge_features = edge_features + self.dropout(edge_features)
             edge_features = self.norm2_e(edge_features)
         
-        return node_features, edge_features, (scores_n, scores_e)
+        return node_features, edge_features, (scores_n, scores_e), (x_n, x_e)
 
 
 class HRTAttentionLayer(nn.Module):

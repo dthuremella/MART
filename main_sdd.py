@@ -212,7 +212,8 @@ def test(epoch, model, loader):
     avg_meter = {'epoch': epoch, 'ade': 0, 'fde': 0, 'counter': 0}
     
     with torch.no_grad():
-        scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
+        scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': [],
+                    'pair_n_x': [], 'pair_e_x': [], 'group_n_x': [], 'group_e_x': []}
         xs, ys, ypreds = [], [], []
         for _, data in enumerate(loader):
             x_abs, y = data
