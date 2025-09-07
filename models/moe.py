@@ -11,6 +11,9 @@ for all tokens.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+
+interpretable_moe = True  
 
 # Define the Expert class
 class Expert(nn.Module):
@@ -32,18 +35,31 @@ class GatingNetwork(nn.Module):
     def forward(self, x):
         return F.softmax(self.gate(x), dim=2)
 
+
+# Define the Interpretable Gating Network class
+class InterpretableGatingNetwork(nn.Module):
+    def __init__(self):
+        super(InterpretableGatingNetwork, self).__init__()
+
+    def forward(self, x, experts):
+        w_enc = torch.stack([expert.fc1.weight for expert in experts], dim=2)
+        mu_h = torch.matmul(x, w_enc.mean(dim=0))
+        sigma_h = torch.matmul(x**2, w_enc.std(dim=0)) + 1e-6
+        gate = - torch.erf(mu_h / (math.sqrt(2) * sigma_h))
+        return F.softmax(gate, dim=2) # should this be 2? then should above dim b 2?
+
 # Define the Mixture of Experts Layer class
 class MoELayer(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_experts):
         super(MoELayer, self).__init__()
         self.experts = nn.ModuleList([Expert(input_dim, hidden_dim, output_dim) for _ in range(num_experts)])
-        self.gate = GatingNetwork(input_dim, num_experts)
+        self.gate = InterpretableGatingNetwork() if interpretable_moe else GatingNetwork(input_dim, num_experts)
 
     def forward(self, x, num_experts_per_tok=2):
         # import pdb; pdb.set_trace()
         x_shape = x.shape
         # import pdb; pdb.set_trace()
-        gating_scores = self.gate(x)
+        gating_scores = self.gate(x, experts=self.experts) if interpretable_moe else self.gate(x)
         if len(x_shape) == 4:
             g_shape = gating_scores.shape
             gating_scores = gating_scores.reshape((g_shape[0], 
