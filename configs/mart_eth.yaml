@@ -18,7 +18,7 @@ pred_rel: True
 
 # training params
 num_epochs: 300
-lr: 0.001
+lr: 0.0016
 clip_grad: null
 batch_size: 16
 scheduler_type: MultiStepLR

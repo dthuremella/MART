@@ -155,7 +155,7 @@ def train(epoch, model, optimizer, loader):
                 scores[k].append(score[k])
 
                 # load balancing loss
-                alpha = 10
+                alpha = 0.01
                 maxes, argmaxes = torch.max(score[k], -1)
                 argmaxes = argmaxes.flatten(-2, -1)
                 gating_scores_full = score[k].flatten(-3, -2)
