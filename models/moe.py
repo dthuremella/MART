@@ -12,6 +12,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+two_layer_router = False
+
 # Define the Expert class
 class Expert(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
@@ -27,10 +29,19 @@ class Expert(nn.Module):
 class GatingNetwork(nn.Module):
     def __init__(self, input_dim, num_experts):
         super(GatingNetwork, self).__init__()
-        self.gate = nn.Linear(input_dim, num_experts)
+        if two_layer_router:
+            self.gate_l1 = nn.Linear(input_dim, input_dim)
+            self.gate_l2 = nn.Linear(input_dim, num_experts)
+        else:
+            self.gate = nn.Linear(input_dim, num_experts)
 
     def forward(self, x):
-        return F.softmax(self.gate(x), dim=2)
+        if two_layer_router:
+            x = F.relu(self.gate_l1(x))
+            return F.softmax(self.gate_l2(x), dim=2)
+        else:
+            return F.softmax(self.gate(x), dim=2)
+
 
 # Define the Mixture of Experts Layer class
 class MoELayer(nn.Module):

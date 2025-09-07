@@ -18,9 +18,9 @@ pred_rel: True
 
 # training params
 num_epochs: 300
-lr: 0.0016
+lr: 0.001
 clip_grad: null
-batch_size: 8
+batch_size: 16
 scheduler_type: MultiStepLR
 milestones: [100, 200]
 decay_gamma: 0.5

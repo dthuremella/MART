@@ -155,7 +155,7 @@ def train(epoch, model, optimizer, loader):
                 scores[k].append(score[k])
 
                 # load balancing loss
-                alpha = 0.01
+                alpha = 10
                 maxes, argmaxes = torch.max(score[k], -1)
                 argmaxes = argmaxes.flatten(-2, -1)
                 gating_scores_full = score[k].flatten(-3, -2)
@@ -257,7 +257,7 @@ def test(epoch, model, loader):
     #     scores[k] = torch.cat(scores[k], dim=2).cpu()
     # xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
     data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
-    pickle.dump(data_dump, open('viz_scores_sdd_full.pkl', 'wb'))
+    pickle.dump(data_dump, open('viz_scores_sdd_{}.pkl'.format(args.tag), 'wb'))
 
     
     th = get_th(opts, model)

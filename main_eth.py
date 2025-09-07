@@ -15,6 +15,8 @@ from models.mart import MART
 from loaders.dataloader_eth import TrajectoryDataset
 import pickle
 
+arg_load_balance = True
+
 def my_collate(batch):
     '''
     Pads batch of variable length
@@ -170,7 +172,6 @@ def train(epoch, model, optimizer, loader):
                         lb_loss += loss_load_balance
             lb_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
 
-
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
             y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
@@ -180,7 +181,7 @@ def train(epoch, model, optimizer, loader):
         mask = x_abs[:,:,0,-1]
         total_loss = torch.sum(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0] * mask) # for all agents
         total_loss += lb_loss
-
+        
         avg_meter['loss'] += total_loss.item()
         avg_meter['counter'] += mask.sum()
 
