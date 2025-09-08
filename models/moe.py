@@ -13,6 +13,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 two_layer_router = False
+noisy_router = True
+
+K = 1  # Number of experts to use per token for top-k gating
 
 # Define the Expert class
 class Expert(nn.Module):
@@ -32,6 +35,10 @@ class GatingNetwork(nn.Module):
         if two_layer_router:
             self.gate_l1 = nn.Linear(input_dim, input_dim)
             self.gate_l2 = nn.Linear(input_dim, num_experts)
+        elif noisy_router:
+            self.gate = nn.Linear(input_dim, num_experts)
+            self.noise_layer = nn.Linear(input_dim, num_experts)
+            self.noise_stddev = 1.0
         else:
             self.gate = nn.Linear(input_dim, num_experts)
 
@@ -39,6 +46,24 @@ class GatingNetwork(nn.Module):
         if two_layer_router:
             x = F.relu(self.gate_l1(x))
             return F.softmax(self.gate_l2(x), dim=2)
+        elif noisy_router:
+            clean_logits = self.gate(x)
+            if self.training:
+                # Calculate noise contribution
+                # We use a separate linear layer for noise magnitude, scaled by standard normal noise
+                # Shape: (B * S, num_experts)
+                noise_magnitude = self.noise_layer(x)
+                # Softplus ensures the magnitude scaling is positive
+                noise_scale = F.softplus(noise_magnitude)
+                # Sample standard Gaussian noise
+                # Shape: (B * S, num_experts)
+                sampled_noise = torch.randn_like(clean_logits) * self.noise_stddev
+                # Add scaled noise to the clean logits
+                noisy_logits = clean_logits + (noise_scale * sampled_noise)
+            else:
+                # No noise during inference
+                noisy_logits = clean_logits
+            return F.softmax(logits + noise, dim=2)
         else:
             return F.softmax(self.gate(x), dim=2)
 
@@ -50,7 +75,7 @@ class MoELayer(nn.Module):
         self.experts = nn.ModuleList([Expert(input_dim, hidden_dim, output_dim) for _ in range(num_experts)])
         self.gate = GatingNetwork(input_dim, num_experts)
 
-    def forward(self, x, num_experts_per_tok=2):
+    def forward(self, x, num_experts_per_tok=K):
         # import pdb; pdb.set_trace()
         x_shape = x.shape
         # import pdb; pdb.set_trace()
