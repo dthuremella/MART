@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 two_layer_router = False
-noisy_router = True
+noisy_router = False
 
 K = 1  # Number of experts to use per token for top-k gating
 

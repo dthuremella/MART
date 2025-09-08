@@ -15,6 +15,8 @@ from models.mart import MART
 from loaders.dataloader_sdd import TrajectoryDataset
 import pickle
 
+clip_router_grad = True
+
 def my_collate(batch):
     '''
     Pads batch of variable length
@@ -198,6 +200,18 @@ def train(epoch, model, optimizer, loader):
             loss.backward()
             if opts.clip_grad is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), opts.clip_grad)
+            elif clip_router_grad:
+                params_to_clip = []
+                for pair_encoder in model.pair_encoders:
+                    for layer in pair_encoder.layers:
+                        params_to_clip.extend(list(layer.linear_net_n.gate.parameters()))
+                        params_to_clip.extend(list(layer.linear_net2_e.gate.parameters()))
+                for hyper_encoder in model.hyper_encoders:
+                    for layer in hyper_encoder.layers:
+                        params_to_clip.extend(list(layer.linear_net_n.gate.parameters()))
+                        params_to_clip.extend(list(layer.linear_net2_e.gate.parameters()))
+                torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
+
                 
             optimizer.step()
 
