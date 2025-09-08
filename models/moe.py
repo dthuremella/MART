@@ -63,7 +63,7 @@ class GatingNetwork(nn.Module):
             else:
                 # No noise during inference
                 noisy_logits = clean_logits
-            return F.softmax(logits + noise, dim=2)
+            return F.softmax(noisy_logits, dim=2)
         else:
             return F.softmax(self.gate(x), dim=2)
 
