@@ -14,7 +14,6 @@ import torch.nn.functional as F
 
 two_layer_router = False
 noisy_router = False
-router_z_loss = False
 
 K = 2  # Number of experts to use per token for top-k gating
 
@@ -111,8 +110,8 @@ class MoELayer(nn.Module):
             output = output.reshape((o_shape[0], x_shape[1], x_shape[2], o_shape[-1]))
 
         # scores = torch.nonzero(gating_scores, as_tuple=True)[-1].view((*gating_scores.shape[:2], 2))
-        if router_z_loss and self.training:
-            return output, logits
+        if self.training:
+            return output, gating_scores, logits
         return output, gating_scores
 
 # Define the overall Transformer model with integrated MoE

@@ -169,13 +169,18 @@ class MART(nn.Module):
         n_pair, e_pair = n_initial, None
         n_group, e_group, G = n_initial, None, None
         scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
+        logits = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
         for i in range(self.args.num_layers):
-            n_pair, e_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True, epoch=epoch)
-            n_group, e_group, G, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True,epoch=epoch)
+            n_pair, e_pair, scores_pair, logits_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True, epoch=epoch)
+            n_group, e_group, G, scores_group, logits_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True,epoch=epoch)
             scores['pair_n'].append(scores_pair[0])
             scores['pair_e'].append(scores_pair[1])
             scores['group_n'].append(scores_group[0])
             scores['group_e'].append(scores_group[1])
+            logits['pair_n'].append(logits_pair[0])
+            logits['pair_e'].append(logits_pair[1])
+            logits['group_n'].append(logits_group[0])
+            logits['group_e'].append(logits_group[1])
 
             # import pdb; pdb.set_trace()
             # n_pair = self.pair_moes_node[i](n_pair, num_experts_per_tok=2)
@@ -193,5 +198,5 @@ class MART(nn.Module):
         out = torch.cat(out_list, dim=2)
         out = out.view(batch_size, num_agents, self.args.sample_k, self.args.future_length, -1)
         
-        return out, scores
+        return out, scores, logits
     

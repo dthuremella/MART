@@ -16,7 +16,8 @@ from loaders.dataloader_sdd import TrajectoryDataset
 import pickle
 # python main_sdd.py --config ./configs/mart_sdd.yaml --gpu 1 --tag div8_top2_zloss
 
-load_balance, router_z_loss = False, False # only one can be true at a time
+load_balance = True
+router_z_loss = False 
 clip_router_grad = False
 
 def my_collate(batch):
@@ -95,12 +96,16 @@ def main():
     
     results_path = os.path.join(model_save_dir, 'sdd_results.pkl')
     lb_log = {}
+    z_log = {}
     for k in ['pair_n', 'pair_e', 'group_n', 'group_e']:
         lb_log[k] = {}
-        for i in range(4): lb_log[k][i] = []
+        z_log[k] = {}
+        for i in range(4): 
+            lb_log[k][i] = []
+            z_log[k][i] = []
 
     for epoch in range(0, opts.num_epochs):
-        train_loss = train(epoch, model, optimizer, loader_train, lb_log=lb_log)
+        train_loss = train(epoch, model, optimizer, loader_train, lb_log=lb_log, z_log=z_log)
         test_loss, ade = test(epoch, model, loader_test)
 
         results['epochs'].append(epoch)
@@ -108,6 +113,7 @@ def main():
         results['test_ades'].append(ade.item())
         results['train_losses'].append(train_loss.item())
         results['lb_log'] = lb_log
+        results['z_log'] = z_log
         pickle.dump(results, open(results_path, 'wb'))
 
         state = {
@@ -136,7 +142,7 @@ def main():
             scheduler.step()
 
 
-def train(epoch, model, optimizer, loader, lb_log=None):
+def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
     model.train()
     avg_meter = {'epoch': epoch, 'loss': 0, 'counter': 0}
     loader_len = len(loader)
@@ -157,14 +163,14 @@ def train(epoch, model, optimizer, loader, lb_log=None):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred, score = model(x_abs, x_rel, epoch=epoch)
+        y_pred, score, logit = model(x_abs, x_rel, epoch=epoch)
         lb_loss = 0
         if load_balance:
             for k in score:
                 score[k] = torch.stack(score[k])
 
                 # load balancing loss
-                alpha = 1
+                alpha = 0.1
                 maxes, argmaxes = torch.max(score[k], -1)
                 argmaxes = argmaxes.flatten(-2, -1)
                 gating_scores_full = score[k].flatten(-3, -2)
@@ -181,20 +187,20 @@ def train(epoch, model, optimizer, loader, lb_log=None):
             lb_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
         z_loss = 0
         if router_z_loss:
-            for k in score:
-                score[k] = torch.stack(score[k])
-                scores[k].append(score[k])
+            for k in logit:
+                logit[k] = torch.stack(logit[k])
 
                 # router z loss
                 alpha = 1
-                for u in range(score[k].shape[0]):
-                    for v in range(score[k].shape[1]):
-                        exp = torch.exp(score[k][u][v])
+                for u in range(logit[k].shape[0]):
+                    for v in range(logit[k].shape[1]):
+                        exp = torch.exp(logit[k][u][v])
                         sum_over_num_experts = torch.sum(exp, dim=-1)
                         squared_log = torch.pow(torch.log(sum_over_num_experts), 2)
                         z_logit_term = alpha * torch.mean(squared_log)
                         z_loss += z_logit_term
-            z_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
+                        if z_log is not None: z_log[k][u].append(z_logit_term.item())
+            z_loss /= (len(logit) * logit[k].shape[0] * logit[k].shape[1])
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)

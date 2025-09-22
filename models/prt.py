@@ -144,13 +144,17 @@ class RT(nn.Module):
         
         scores_n = []
         scores_e = []
+        logits_n = []
+        logits_e = []
         for layer in self.layers:
-            node_features, edge_features, score = layer(node_features, edge_features, epoch=epoch)
+            node_features, edge_features, score, logit = layer(node_features, edge_features, epoch=epoch)
             scores_n.append(score[0])
             scores_e.append(score[1])
+            logits_n.append(logit[0])
+            logits_e.append(logit[1])
 
         if return_edge:
-            return node_features, edge_features, (torch.stack(scores_n), torch.stack(scores_e))
+            return node_features, edge_features, (torch.stack(scores_n), torch.stack(scores_e)), (torch.stack(logits_n), torch.stack(logits_e))
         
         return node_features
 
@@ -182,13 +186,17 @@ class RTNoEdgeInit(nn.Module):
     def forward(self, node_features, edge_features, return_edge=False, epoch=None):
         scores_n = []
         scores_e = []
+        logits_n = []
+        logits_e = []
         for layer in self.layers:
-            node_features, edge_features, score = layer(node_features, edge_features, epoch=epoch)
+            node_features, edge_features, score, logit = layer(node_features, edge_features, epoch=epoch)
             scores_n.append(score[0])
             scores_e.append(score[1])
+            logits_n.append(logit[0])
+            logits_e.append(logit[1])
         
         if return_edge:
-            return node_features, edge_features, (torch.stack(scores_n), torch.stack(scores_e))
+            return node_features, edge_features, (torch.stack(scores_n), torch.stack(scores_e)), (torch.stack(logits_n), torch.stack(logits_e))
         
         return node_features
 
@@ -259,7 +267,7 @@ class RTTransformerLayer(nn.Module):
         node_features = node_features + self.dropout(attn_out)
         node_features = self.norm1_n(node_features)
         
-        linear_out, scores_n = self.linear_net_n(node_features, epoch=epoch)
+        linear_out, scores_n, logits_n = self.linear_net_n(node_features, epoch=epoch)
         node_features = node_features + self.dropout(linear_out)
         node_features = self.norm2_n(node_features)
         
@@ -278,13 +286,13 @@ class RTTransformerLayer(nn.Module):
             edge_features = edge_features + self.dropout(edge_features)
             edge_features = self.norm1_e(edge_features)
             
-            edge_features, scores_e = self.linear_net2_e(edge_features, epoch=epoch)
+            edge_features, scores_e, logits_e = self.linear_net2_e(edge_features, epoch=epoch)
             edge_features = edge_features + self.dropout(edge_features)
             edge_features = self.norm2_e(edge_features)
 
         # import pdb; pdb.set_trace()
         
-        return node_features, edge_features, (scores_n, scores_e)
+        return node_features, edge_features, (scores_n, scores_e), (logits_n, logits_e)
 
 
 class RTAttentionLayer(nn.Module):
