@@ -16,7 +16,7 @@ from loaders.dataloader_sdd import TrajectoryDataset
 import pickle
 # python main_sdd.py --config ./configs/mart_sdd.yaml --gpu 1 --tag div8_top2_zloss
 
-load_balance, router_z_loss = True, False # only one can be true at a time
+load_balance, router_z_loss = False, False # only one can be true at a time
 clip_router_grad = False
 
 def my_collate(batch):
@@ -180,7 +180,7 @@ def train(epoch, model, optimizer, loader):
                 scores[k].append(score[k])
 
                 # router z loss
-                alpha = 0.01
+                alpha = 1
                 for u in range(score[k].shape[0]):
                     for v in range(score[k].shape[1]):
                         exp = torch.exp(score[k][u][v])
