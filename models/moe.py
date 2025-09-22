@@ -110,9 +110,9 @@ class MoELayer(nn.Module):
             output = output.reshape((o_shape[0], x_shape[1], x_shape[2], o_shape[-1]))
 
         # scores = torch.nonzero(gating_scores, as_tuple=True)[-1].view((*gating_scores.shape[:2], 2))
-        if self.training:
-            return output, gating_scores, logits
-        return output, gating_scores
+        # if self.training:
+        #     return output, logits
+        return output, gating_scores, logits
 
 # Define the overall Transformer model with integrated MoE
 class TransformerWithMoE(nn.Module):
