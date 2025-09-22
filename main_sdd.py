@@ -94,13 +94,20 @@ def main():
     print('[INFO] The seed is :',seed)
     
     results_path = os.path.join(model_save_dir, 'sdd_results.pkl')
+    lb_log = {}
+    for k in ['pair_n', 'pair_e', 'group_n', 'group_e']:
+        lb_log[k] = {}
+        for i in range(4): lb_log[k][i] = []
+
     for epoch in range(0, opts.num_epochs):
-        train_loss = train(epoch, model, optimizer, loader_train)
+        train_loss = train(epoch, model, optimizer, loader_train, lb_log=lb_log)
         test_loss, ade = test(epoch, model, loader_test)
+
         results['epochs'].append(epoch)
-        results['test_losses'].append(test_loss)
-        results['test_ades'].append(ade)
-        results['train_losses'].append(train_loss)
+        results['test_losses'].append(test_loss.item())
+        results['test_ades'].append(ade.item())
+        results['train_losses'].append(train_loss.item())
+        results['lb_log'] = lb_log
         pickle.dump(results, open(results_path, 'wb'))
 
         state = {
@@ -129,14 +136,13 @@ def main():
             scheduler.step()
 
 
-def train(epoch, model, optimizer, loader):
+def train(epoch, model, optimizer, loader, lb_log=None):
     model.train()
     avg_meter = {'epoch': epoch, 'loss': 0, 'counter': 0}
     loader_len = len(loader)
     batch_count, divider = 0, 0
     is_first_loss = True
 
-    scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
     for i, data in enumerate(loader):
         optimizer.zero_grad()
         batch_count += 1
@@ -156,7 +162,6 @@ def train(epoch, model, optimizer, loader):
         if load_balance:
             for k in score:
                 score[k] = torch.stack(score[k])
-                scores[k].append(score[k])
 
                 # load balancing loss
                 alpha = 1
@@ -172,6 +177,7 @@ def train(epoch, model, optimizer, loader):
                         pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
                         loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
                         lb_loss += loss_load_balance
+                        if lb_log is not None: lb_log[k][u].append(loss_load_balance.item())
             lb_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
         z_loss = 0
         if router_z_loss:
