@@ -148,7 +148,7 @@ class MART(nn.Module):
         for i in range(args.sample_k):
             self.add_module("head_%d" % i, Decoder(args))
         
-    def forward(self, x_abs, x_rel):
+    def forward(self, x_abs, x_rel, epoch=None):
         inputs = []
         batch_size, num_agents, length, _ = x_abs.shape
         cur_pos = x_abs[:, :, [-1]].view(batch_size*num_agents, 1, -1).contiguous()
@@ -170,8 +170,8 @@ class MART(nn.Module):
         n_group, e_group, G = n_initial, None, None
         scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
         for i in range(self.args.num_layers):
-            n_pair, e_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
-            n_group, e_group, G, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
+            n_pair, e_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True, epoch=epoch)
+            n_group, e_group, G, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True,epoch=epoch)
             scores['pair_n'].append(scores_pair[0])
             scores['pair_e'].append(scores_pair[1])
             scores['group_n'].append(scores_group[0])

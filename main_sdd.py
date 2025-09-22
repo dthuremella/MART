@@ -14,8 +14,10 @@ from utils import *
 from models.mart import MART
 from loaders.dataloader_sdd import TrajectoryDataset
 import pickle
+# python main_sdd.py --config ./configs/mart_sdd.yaml --gpu 1 --tag div8_top2_zloss
 
-clip_router_grad = True
+load_balance, router_z_loss = True, False # only one can be true at a time
+clip_router_grad = False
 
 def my_collate(batch):
     '''
@@ -149,27 +151,44 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred, score = model(x_abs, x_rel)
+        y_pred, score = model(x_abs, x_rel, epoch=epoch)
         lb_loss = 0
-        if args.load_balance:
+        if load_balance:
             for k in score:
                 score[k] = torch.stack(score[k])
                 scores[k].append(score[k])
 
                 # load balancing loss
-                alpha = 0.01
+                alpha = 1
                 maxes, argmaxes = torch.max(score[k], -1)
                 argmaxes = argmaxes.flatten(-2, -1)
                 gating_scores_full = score[k].flatten(-3, -2)
                 for u in range(score[k].shape[0]):
                     for v in range(score[k].shape[1]):
-                        unq, counts = argmaxes[u][v].unique(return_counts=True)
+                        unq, unq_counts = argmaxes[u][v].unique(return_counts=True)
+                        counts = torch.zeros(score[k].shape[-1]).long().cuda()
+                        counts[unq] = unq_counts
                         fi = counts.float() / argmaxes.shape[-1]
                         pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
-                        fi = torch.cat((fi, torch.zeros(pi.shape[0]-fi.shape[0]).cuda())) # in case all aren't filled
                         loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
                         lb_loss += loss_load_balance
             lb_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
+        z_loss = 0
+        if router_z_loss:
+            for k in score:
+                score[k] = torch.stack(score[k])
+                scores[k].append(score[k])
+
+                # router z loss
+                alpha = 0.01
+                for u in range(score[k].shape[0]):
+                    for v in range(score[k].shape[1]):
+                        exp = torch.exp(score[k][u][v])
+                        sum_over_num_experts = torch.sum(exp, dim=-1)
+                        squared_log = torch.pow(torch.log(sum_over_num_experts), 2)
+                        z_logit_term = alpha * torch.mean(squared_log)
+                        z_loss += z_logit_term
+            z_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
@@ -182,7 +201,7 @@ def train(epoch, model, optimizer, loader):
                             torch.mean(torch.norm(y_pred - y, dim=-1), dim=3),
                             dim=2)[0] * mask    # mask out loss for invalid
                         ) 
-        total_loss += lb_loss
+        total_loss += (lb_loss + z_loss)
         
         avg_meter['loss'] += total_loss.item()
         avg_meter['counter'] += mask.sum()
@@ -289,7 +308,6 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
     parser.add_argument("--test", action='store_true')
-    parser.add_argument("--load_balance", action='store_true')
 
     args = parser.parse_args()
 

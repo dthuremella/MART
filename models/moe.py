@@ -14,8 +14,9 @@ import torch.nn.functional as F
 
 two_layer_router = False
 noisy_router = False
+router_z_loss = False
 
-K = 1  # Number of experts to use per token for top-k gating
+K = 2  # Number of experts to use per token for top-k gating
 
 # Define the Expert class
 class Expert(nn.Module):
@@ -30,22 +31,23 @@ class Expert(nn.Module):
 
 # Define the Gating Network class
 class GatingNetwork(nn.Module):
-    def __init__(self, input_dim, num_experts):
+    def __init__(self, input_dim, num_experts, noise_stddev=1.0):
         super(GatingNetwork, self).__init__()
         if two_layer_router:
             self.gate_l1 = nn.Linear(input_dim, input_dim)
             self.gate_l2 = nn.Linear(input_dim, num_experts)
         elif noisy_router:
             self.gate = nn.Linear(input_dim, num_experts)
-            self.noise_layer = nn.Linear(input_dim, num_experts)
-            self.noise_stddev = 1.0
+            # Layer for adding noise, only applied during training
+            self.noise_layer = nn.Linear(input_dim, num_experts, bias=False)
+            self.noise_stddev = noise_stddev
         else:
             self.gate = nn.Linear(input_dim, num_experts)
 
-    def forward(self, x):
+    def forward(self, x, epoch=None):
         if two_layer_router:
             x = F.relu(self.gate_l1(x))
-            return F.softmax(self.gate_l2(x), dim=2)
+            ret = self.gate_l2(x)
         elif noisy_router:
             clean_logits = self.gate(x)
             if self.training:
@@ -57,15 +59,16 @@ class GatingNetwork(nn.Module):
                 noise_scale = F.softplus(noise_magnitude)
                 # Sample standard Gaussian noise
                 # Shape: (B * S, num_experts)
-                sampled_noise = torch.randn_like(clean_logits) * self.noise_stddev
+                sampled_noise = torch.randn_like(clean_logits) * self.noise_stddev * (1/(epoch+1)**0.5) #  if epoch is not None else 1.0)
                 # Add scaled noise to the clean logits
                 noisy_logits = clean_logits + (noise_scale * sampled_noise)
             else:
                 # No noise during inference
                 noisy_logits = clean_logits
-            return F.softmax(noisy_logits, dim=2)
+            ret = noisy_logits
         else:
-            return F.softmax(self.gate(x), dim=2)
+            ret = self.gate(x)
+        return F.softmax(ret, dim=2), ret
 
 
 # Define the Mixture of Experts Layer class
@@ -75,11 +78,11 @@ class MoELayer(nn.Module):
         self.experts = nn.ModuleList([Expert(input_dim, hidden_dim, output_dim) for _ in range(num_experts)])
         self.gate = GatingNetwork(input_dim, num_experts)
 
-    def forward(self, x, num_experts_per_tok=K):
+    def forward(self, x, num_experts_per_tok=K, epoch=None):
         # import pdb; pdb.set_trace()
         x_shape = x.shape
         # import pdb; pdb.set_trace()
-        gating_scores = self.gate(x)
+        gating_scores, logits = self.gate(x, epoch=epoch)
         if len(x_shape) == 4:
             g_shape = gating_scores.shape
             gating_scores = gating_scores.reshape((g_shape[0], 
@@ -108,6 +111,8 @@ class MoELayer(nn.Module):
             output = output.reshape((o_shape[0], x_shape[1], x_shape[2], o_shape[-1]))
 
         # scores = torch.nonzero(gating_scores, as_tuple=True)[-1].view((*gating_scores.shape[:2], 2))
+        if router_z_loss:
+            return output, logits
         return output, gating_scores
 
 # Define the overall Transformer model with integrated MoE

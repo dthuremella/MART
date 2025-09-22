@@ -135,7 +135,7 @@ class RT(nn.Module):
             
         return edges
         
-    def forward(self, node_features, edge_features_, return_edge=False):
+    def forward(self, node_features, edge_features_, return_edge=False, epoch=None):
         batch = node_features.shape[0]
         num_nodes = node_features.shape[1]
         
@@ -145,7 +145,7 @@ class RT(nn.Module):
         scores_n = []
         scores_e = []
         for layer in self.layers:
-            node_features, edge_features, score = layer(node_features, edge_features)
+            node_features, edge_features, score = layer(node_features, edge_features, epoch=epoch)
             scores_n.append(score[0])
             scores_e.append(score[1])
 
@@ -179,11 +179,11 @@ class RTNoEdgeInit(nn.Module):
         )
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
 
-    def forward(self, node_features, edge_features, return_edge=False):
+    def forward(self, node_features, edge_features, return_edge=False, epoch=None):
         scores_n = []
         scores_e = []
         for layer in self.layers:
-            node_features, edge_features, score = layer(node_features, edge_features)
+            node_features, edge_features, score = layer(node_features, edge_features, epoch=epoch)
             scores_n.append(score[0])
             scores_e.append(score[1])
         
@@ -253,13 +253,13 @@ class RTTransformerLayer(nn.Module):
             self.norm1_e = nn.LayerNorm(edge_dim)
             self.norm2_e = nn.LayerNorm(edge_dim)
     
-    def forward(self, node_features, edge_features):
+    def forward(self, node_features, edge_features, epoch=None):
         _, N, _ = node_features.shape
         attn_out = self.attention_layer(node_features, edge_features)
         node_features = node_features + self.dropout(attn_out)
         node_features = self.norm1_n(node_features)
         
-        linear_out, scores_n = self.linear_net_n(node_features)
+        linear_out, scores_n = self.linear_net_n(node_features, epoch=epoch)
         node_features = node_features + self.dropout(linear_out)
         node_features = self.norm2_n(node_features)
         
@@ -278,7 +278,7 @@ class RTTransformerLayer(nn.Module):
             edge_features = edge_features + self.dropout(edge_features)
             edge_features = self.norm1_e(edge_features)
             
-            edge_features, scores_e = self.linear_net2_e(edge_features)
+            edge_features, scores_e = self.linear_net2_e(edge_features, epoch=epoch)
             edge_features = edge_features + self.dropout(edge_features)
             edge_features = self.norm2_e(edge_features)
 
