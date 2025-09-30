@@ -11,11 +11,30 @@ for all tokens.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 two_layer_router = False
-noisy_router = False
+noisy_router = True
 
 K = 2  # Number of experts to use per token for top-k gating
+
+def cosine_decay(step: int, max_steps: int, max_amplitude: float, min_amplitude: float = 0.0):
+    """
+    Cosine decay schedule for noise amplitude (or any scalar).
+    
+    Args:
+        step (int): Current step (0-based).
+        max_steps (int): Total number of steps for full decay.
+        max_amplitude (float): Starting value at step=0.
+        min_amplitude (float): Final value at step=max_steps.
+        
+    Returns:
+        float: Current amplitude.
+    """
+    step = min(step, max_steps)  # clamp so we don’t overshoot
+    cos_decay = 0.5 * (1 + math.cos(math.pi * step / max_steps))
+    return min_amplitude + (max_amplitude - min_amplitude) * cos_decay
+
 
 # Define the Expert class
 class Expert(nn.Module):
@@ -35,39 +54,35 @@ class GatingNetwork(nn.Module):
         if two_layer_router:
             self.gate_l1 = nn.Linear(input_dim, input_dim)
             self.gate_l2 = nn.Linear(input_dim, num_experts)
-        elif noisy_router:
-            self.gate = nn.Linear(input_dim, num_experts)
-            # Layer for adding noise, only applied during training
-            self.noise_layer = nn.Linear(input_dim, num_experts, bias=False)
-            self.noise_stddev = noise_stddev
         else:
             self.gate = nn.Linear(input_dim, num_experts)
+        
+        if noisy_router:
+            self.noise_stddev = noise_stddev # TODO reduce if it doesn't learn anything at beginning (too high)
+            # TODO NORMALIZE (BATCH NORM) BEFOREHAND, THEN WEKNOW WHAT THE STD DEV SHOULD BE (AFTER A FEW STEPS, NORM WILL BE 1)
 
     def forward(self, x, epoch=None):
         if two_layer_router:
             x = F.relu(self.gate_l1(x))
             ret = self.gate_l2(x)
-        elif noisy_router:
-            clean_logits = self.gate(x)
+        else:
+            ret = self.gate(x)
+
+        clean_gating_scores = None
+        if noisy_router:
+            clean_logits = ret
             if self.training:
-                # Calculate noise contribution
-                # We use a separate linear layer for noise magnitude, scaled by standard normal noise
-                # Shape: (B * S, num_experts)
-                noise_magnitude = self.noise_layer(x)
-                # Softplus ensures the magnitude scaling is positive
-                noise_scale = F.softplus(noise_magnitude)
-                # Sample standard Gaussian noise
-                # Shape: (B * S, num_experts)
-                sampled_noise = torch.randn_like(clean_logits) * self.noise_stddev * (1/(epoch+1)**0.5) #  if epoch is not None else 1.0)
+                ### cosine decay
+                sampled_noise = torch.randn_like(clean_logits) * self.noise_stddev * cosine_decay(epoch, 300, 1.0, 0.0) if epoch is not None else 1.0
+
                 # Add scaled noise to the clean logits
-                noisy_logits = clean_logits + (noise_scale * sampled_noise)
+                noisy_logits = clean_logits + sampled_noise
+                clean_gating_scores = F.softmax(clean_logits, dim=2)
             else:
                 # No noise during inference
                 noisy_logits = clean_logits
             ret = noisy_logits
-        else:
-            ret = self.gate(x)
-        return F.softmax(ret, dim=2), ret
+        return F.softmax(ret, dim=2), ret, clean_gating_scores
 
 
 # Define the Mixture of Experts Layer class
@@ -81,7 +96,7 @@ class MoELayer(nn.Module):
         # import pdb; pdb.set_trace()
         x_shape = x.shape
         # import pdb; pdb.set_trace()
-        gating_scores, logits = self.gate(x, epoch=epoch)
+        gating_scores, logits, clean_gating_scores = self.gate(x, epoch=epoch)
         if len(x_shape) == 4:
             g_shape = gating_scores.shape
             gating_scores = gating_scores.reshape((g_shape[0], 
@@ -109,10 +124,22 @@ class MoELayer(nn.Module):
             o_shape = output.shape
             output = output.reshape((o_shape[0], x_shape[1], x_shape[2], o_shape[-1]))
 
-        # scores = torch.nonzero(gating_scores, as_tuple=True)[-1].view((*gating_scores.shape[:2], 2))
-        # if self.training:
-        #     return output, logits
-        return output, gating_scores, logits
+        if clean_gating_scores is not None and self.training:
+            if len(x_shape) == 4:
+                g_shape = clean_gating_scores.shape
+                clean_gating_scores = clean_gating_scores.reshape((g_shape[0], 
+                                            g_shape[1]*g_shape[2], g_shape[3]))
+                                            
+            topk_gating_scores, topk_indices = clean_gating_scores.topk(num_experts_per_tok, dim=2, sorted=False)
+            # Create a mask to zero out the contributions of non-topk experts
+            mask = torch.zeros_like(clean_gating_scores).scatter_(2, topk_indices, 1) # TODO what does scatter do?  
+            # Use the mask to retain only the topk gating scores
+            clean_gating_scores = clean_gating_scores * mask 
+            # Normalize the gating scores to sum to 1 across the selected top experts
+            clean_gating_scores = F.normalize(gating_scores, p=1, dim=2)            
+            return output, clean_gating_scores, logits
+        else: 
+            return output, gating_scores, logits
 
 # Define the overall Transformer model with integrated MoE
 class TransformerWithMoE(nn.Module):

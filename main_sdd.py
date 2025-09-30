@@ -16,9 +16,9 @@ from loaders.dataloader_sdd import TrajectoryDataset
 import pickle
 # python main_sdd.py --config ./configs/mart_sdd.yaml --gpu 1 --tag div8_top2_zloss
 
-load_balance = True
+load_balance = False
 router_z_loss = False 
-clip_router_grad = False
+clip_router_grad = True
 
 def my_collate(batch):
     '''
@@ -170,7 +170,7 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
                 score[k] = torch.stack(score[k])
 
                 # load balancing loss
-                alpha = 0.1
+                alpha = 0.01
                 maxes, argmaxes = torch.max(score[k], -1)
                 argmaxes = argmaxes.flatten(-2, -1)
                 gating_scores_full = score[k].flatten(-3, -2)
@@ -191,7 +191,7 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
                 logit[k] = torch.stack(logit[k])
 
                 # router z loss
-                alpha = 1
+                alpha = 0.01
                 for u in range(logit[k].shape[0]):
                     for v in range(logit[k].shape[1]):
                         exp = torch.exp(logit[k][u][v])
