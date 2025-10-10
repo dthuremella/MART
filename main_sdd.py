@@ -17,8 +17,9 @@ import pickle
 # python main_sdd.py --config ./configs/mart_sdd.yaml --gpu 1 --tag div8_top2_zloss
 
 load_balance = False
+load_balance_loss_only = False
 router_z_loss = False 
-clip_router_grad = True
+clip_router_grad = False
 
 def my_collate(batch):
     '''
@@ -170,7 +171,7 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
                 score[k] = torch.stack(score[k])
 
                 # load balancing loss
-                alpha = 0.01
+                alpha = 1
                 maxes, argmaxes = torch.max(score[k], -1)
                 argmaxes = argmaxes.flatten(-2, -1)
                 gating_scores_full = score[k].flatten(-3, -2)
@@ -209,11 +210,14 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
         y = y[:, :, None, :, :]
         
         mask = x_abs[:,:,0,-1]
-        total_loss = torch.sum(torch.min(      # minADE
-                            torch.mean(torch.norm(y_pred - y, dim=-1), dim=3),
-                            dim=2)[0] * mask    # mask out loss for invalid
-                        ) 
-        total_loss += (lb_loss + z_loss)
+        if load_balance_loss_only:
+            total_loss = lb_loss + z_loss
+        else:
+            total_loss = torch.sum(torch.min(      # minADE
+                                torch.mean(torch.norm(y_pred - y, dim=-1), dim=3),
+                                dim=2)[0] * mask    # mask out loss for invalid
+                            ) 
+            total_loss += (lb_loss + z_loss)
         
         avg_meter['loss'] += total_loss.item()
         avg_meter['counter'] += mask.sum()

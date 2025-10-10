@@ -14,9 +14,15 @@ import torch.nn.functional as F
 import math
 
 two_layer_router = False
-noisy_router = True
 
-K = 2  # Number of experts to use per token for top-k gating
+#noisy router options
+noisy_router = True
+softplus_layer = False
+nd_nosoftplus = True # no softplus optimization but layer exists
+
+smallest_final_layer = False
+
+K = 1  # Number of experts to use per token for top-k gating
 
 def cosine_decay(step: int, max_steps: int, max_amplitude: float, min_amplitude: float = 0.0):
     """
@@ -60,6 +66,8 @@ class GatingNetwork(nn.Module):
         if noisy_router:
             self.noise_stddev = noise_stddev # TODO reduce if it doesn't learn anything at beginning (too high)
             # TODO NORMALIZE (BATCH NORM) BEFOREHAND, THEN WEKNOW WHAT THE STD DEV SHOULD BE (AFTER A FEW STEPS, NORM WILL BE 1)
+            if softplus_layer or nd_nosoftplus:
+                self.noise_layer = nn.Linear(input_dim, num_experts, bias=False)
 
     def forward(self, x, epoch=None):
         if two_layer_router:
@@ -73,7 +81,16 @@ class GatingNetwork(nn.Module):
             clean_logits = ret
             if self.training:
                 ### cosine decay
-                sampled_noise = torch.randn_like(clean_logits) * self.noise_stddev * cosine_decay(epoch, 300, 1.0, 0.0) if epoch is not None else 1.0
+                sampled_noise = torch.randn_like(clean_logits) * self.noise_stddev * cosine_decay(epoch, 300, 1.0, 0.0)
+                
+                if softplus_layer:
+                    # We use a separate linear layer for noise magnitude, scaled by standard normal noise
+                    # Shape: (B * S, num_experts)
+                    noise_magnitude = self.noise_layer(x)
+                    # Softplus ensures the magnitude scaling is positive
+                    noise_scalse = F.softplus(noise_magnitude)
+                    # Add scaled noise to the clean logits
+                    sampled_noise = noise_scale * sampled_noise
 
                 # Add scaled noise to the clean logits
                 noisy_logits = clean_logits + sampled_noise
@@ -124,7 +141,7 @@ class MoELayer(nn.Module):
             o_shape = output.shape
             output = output.reshape((o_shape[0], x_shape[1], x_shape[2], o_shape[-1]))
 
-        if clean_gating_scores is not None and self.training:
+        if noisy_router and self.training:
             if len(x_shape) == 4:
                 g_shape = clean_gating_scores.shape
                 clean_gating_scores = clean_gating_scores.reshape((g_shape[0], 

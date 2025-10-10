@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .moe import MoELayer
+from .moe import MoELayer, smallest_final_layer
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -66,19 +66,33 @@ class RT(nn.Module):
             dropout: float = 0.0,
     ):
         super(RT, self).__init__()
-        layer = RTTransformerLayer(
-            num_heads,
-            node_dim,
-            node_hidden_dim,
-            edge_dim,
-            edge_hidden_dim_1,
-            edge_hidden_dim_2,
-            dropout,
-        )
+        if not smallest_final_layer:
+            layer = RTTransformerLayer(
+                num_heads,
+                node_dim,
+                node_hidden_dim,
+                edge_dim,
+                edge_hidden_dim_1,
+                edge_hidden_dim_2,
+                dropout,
+            )
+            self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
+        else:
+            self.layers = []
+            for i in range(num_layers):
+                self.layers.append(RTTransformerLayer(
+                    num_heads,
+                    node_dim,
+                    int(node_hidden_dim / (2**i)),
+                    edge_dim,
+                    edge_hidden_dim_1,
+                    int(edge_hidden_dim_2 / (2**i)),
+                    dropout,
+                ))
+            self.layers = nn.ModuleList(self.layers)
         # self.aggregation = aggregation # 'cat', 'avg', 'sum', 'att'
         self.aggregation = 'cat'
         print('[INFO] PRT Agg: {}'.format(self.aggregation))
-        self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
         self.node2edge_mlp = MLP(input_dim=node_dim * 2 if self.aggregation == 'cat' else node_dim, output_dim=node_dim, hidden_size=(node_hidden_dim,))
         if self.aggregation == 'att':
             self.attention_mlp = MLP(input_dim=node_dim + edge_dim, output_dim=1, hidden_size=(32,))
