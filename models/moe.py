@@ -18,11 +18,13 @@ two_layer_router = False
 #noisy router options
 noisy_router = True
 softplus_layer = False
-nd_nosoftplus = True # no softplus optimization but layer exists
+nd_nosoftplus = False # no softplus optimization but layer exists
 
 smallest_final_layer = False
 
-K = 1  # Number of experts to use per token for top-k gating
+deepseek_lb = True
+
+K = 2  # Number of experts to use per token for top-k gating
 
 def cosine_decay(step: int, max_steps: int, max_amplitude: float, min_amplitude: float = 0.0):
     """
@@ -108,12 +110,17 @@ class MoELayer(nn.Module):
         super(MoELayer, self).__init__()
         self.experts = nn.ModuleList([Expert(input_dim, hidden_dim, output_dim) for _ in range(num_experts)])
         self.gate = GatingNetwork(input_dim, num_experts)
+        if deepseek_lb:
+            self.expert_biases = nn.Parameter(torch.zeros(num_experts))
 
     def forward(self, x, num_experts_per_tok=K, epoch=None):
         # import pdb; pdb.set_trace()
         x_shape = x.shape
         # import pdb; pdb.set_trace()
         gating_scores, logits, clean_gating_scores = self.gate(x, epoch=epoch)
+        if deepseek_lb:
+            gating_scores_orig = gating_scores
+            gating_scores += self.expert_biases
         if len(x_shape) == 4:
             g_shape = gating_scores.shape
             gating_scores = gating_scores.reshape((g_shape[0], 
@@ -123,7 +130,14 @@ class MoELayer(nn.Module):
         # Create a mask to zero out the contributions of non-topk experts
         mask = torch.zeros_like(gating_scores).scatter_(2, topk_indices, 1) # TODO what does scatter do?  
         # Use the mask to retain only the topk gating scores
-        gating_scores = gating_scores * mask 
+        if deepseek_lb:
+            if len(x_shape) == 4:
+                g_shape = gating_scores_orig.shape
+                gating_scores_orig = gating_scores_orig.reshape((g_shape[0], 
+                                            g_shape[1]*g_shape[2], g_shape[3]))
+            gating_scores = gating_scores_orig * mask
+        else:
+            gating_scores = gating_scores * mask 
         # Normalize the gating scores to sum to 1 across the selected top experts
         gating_scores = F.normalize(gating_scores, p=1, dim=2)
         
