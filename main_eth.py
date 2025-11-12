@@ -149,7 +149,7 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred, score = model(x_abs, x_rel)
+        y_pred, score, logits = model(x_abs, x_rel, epoch=epoch)
         lb_loss = 0
         if args.load_balance:
             print('[INFO] Load balancing loss enabled')
@@ -224,7 +224,7 @@ def test(epoch, model, loader):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred, score = model(x_abs, x_rel)
+            y_pred, score, logits = model(x_abs, x_rel)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
@@ -254,7 +254,7 @@ def test(epoch, model, loader):
     #     scores[k] = torch.cat(scores[k], dim=2).cpu()
     # xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
     data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
-    pickle.dump(data_dump, open('viz_scores_{}_full.pkl'.format(args.dataset), 'wb'))
+    pickle.dump(data_dump, open('viz_scores_{}_{}.pkl'.format(args.dataset, args.tag), 'wb'))
 
     th = get_th(opts, model)
     print('\n[{}][{}] Epoch {} th: {}'.format(args.dataset.upper(), 'TEST', epoch, th))
@@ -286,5 +286,7 @@ if __name__ == "__main__":
     else:
         opts.lr *= 1.8
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.test:
+        opts.batch_size = 1
 
     main()

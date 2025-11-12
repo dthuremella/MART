@@ -151,19 +151,7 @@ class HRT(nn.Module):
     ):
         super(HRT, self).__init__()
         self.scale = scale
-        if not smallest_final_layer:
-            layer = HRTTransformerLayer(
-                num_heads,
-                node_dim,
-                node_hidden_dim,
-                edge_dim,
-                edge_hidden_dim_1,
-                edge_hidden_dim_2,
-                dropout,
-                aggregation
-            )
-            self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
-        else:
+        if smallest_final_layer:
             self.layers = []
             for i in range(num_layers):
                 self.layers.append(HRTTransformerLayer(
@@ -177,6 +165,18 @@ class HRT(nn.Module):
                     aggregation
                 ))
             self.layers = nn.ModuleList(self.layers)        
+        else:
+            layer = HRTTransformerLayer(
+                num_heads,
+                node_dim,
+                node_hidden_dim,
+                edge_dim,
+                edge_hidden_dim_1,
+                edge_hidden_dim_2,
+                dropout,
+                aggregation
+            )
+            self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
         print('[INFO] HRT Agg: {}'.format(aggregation))
         
         self.aggregation = aggregation # add or att
@@ -324,8 +324,7 @@ class HRTTransformerLayer(nn.Module):
         self.linear_net_n = \
             MoELayer(node_dim, 
                 node_hidden_dim, 
-                node_dim, 
-                num_experts=8)
+                node_dim)
             # nn.Sequential(
             #     nn.Linear(node_dim, node_hidden_dim),
             #     # nn.Dropout(dropout),
@@ -346,14 +345,12 @@ class HRTTransformerLayer(nn.Module):
                 )
                 # MoELayer(node_dim + edge_dim, 
                 #     edge_hidden_dim_1, 
-                #     edge_dim, 
-                #     num_experts=8)
+                #     edge_dim)
 
             self.linear_net2_e = \
                 MoELayer(edge_dim, 
                     edge_hidden_dim_2, 
-                    edge_dim, 
-                    num_experts=8)
+                    edge_dim)
                 # nn.Sequential(
                 #     nn.Linear(edge_dim, edge_hidden_dim_2),
                 #     # nn.Dropout(dropout),

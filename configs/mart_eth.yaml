@@ -20,7 +20,8 @@ pred_rel: True
 num_epochs: 300
 lr: 0.0016
 clip_grad: null
-batch_size: 16
+batch_size: 4
 scheduler_type: MultiStepLR
 milestones: [100, 200]
 decay_gamma: 0.5
+div_by: 1

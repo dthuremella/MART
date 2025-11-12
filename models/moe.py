@@ -15,16 +15,39 @@ import math
 
 two_layer_router = False
 
-#noisy router options
-noisy_router = True
-softplus_layer = False
-nd_nosoftplus = False # no softplus optimization but layer exists
+#noisy router options (only one should be true)
+noisy_router, softplus_layer, nd_nosoftplus = True, False, False # nd_nosoftplus: no softplus optimization but layer exists
+gumbel_sigmoid, gumbel_softmax, tau_cd, tau_ed = False, False, False, False
+
+no_op = True
 
 smallest_final_layer = False
 
-deepseek_lb = True
+deepseek_lb = False # imported by main function
 
 K = 2  # Number of experts to use per token for top-k gating
+
+NUM_EXPERTS = 8  # Total number of experts in the MoE layer
+
+
+def _gumbel_sigmoid(logits, tau=1, training=True):
+    if not training:
+        return logits.sigmoid()
+    if training:
+        # ~Gumbel(0,1)
+        gumbels1 = (
+            -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
+            .exponential_()
+            .log()
+        )
+        gumbels2 = (
+            -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
+            .exponential_()
+            .log()
+        )
+        # Difference of two gumbels because we apply a sigmoid
+        gumbels1 = (logits + gumbels1 - gumbels2) / tau
+        return gumbels1.sigmoid()
 
 def cosine_decay(step: int, max_steps: int, max_amplitude: float, min_amplitude: float = 0.0):
     """
@@ -44,7 +67,7 @@ def cosine_decay(step: int, max_steps: int, max_amplitude: float, min_amplitude:
     return min_amplitude + (max_amplitude - min_amplitude) * cos_decay
 
 
-# Define the Expert class
+# Define the Expert classes
 class Expert(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(Expert, self).__init__()
@@ -54,6 +77,12 @@ class Expert(nn.Module):
     def forward(self, x):
         x = F.relu(self.fc1(x))
         return self.fc2(x)
+
+class NoOpExpert(nn.Module):
+    def __init__(self):
+        super(NoOpExpert, self).__init__()
+    def forward(self, x):
+        return x
 
 # Define the Gating Network class
 class GatingNetwork(nn.Module):
@@ -90,7 +119,7 @@ class GatingNetwork(nn.Module):
                     # Shape: (B * S, num_experts)
                     noise_magnitude = self.noise_layer(x)
                     # Softplus ensures the magnitude scaling is positive
-                    noise_scalse = F.softplus(noise_magnitude)
+                    noise_scale = F.softplus(noise_magnitude)
                     # Add scaled noise to the clean logits
                     sampled_noise = noise_scale * sampled_noise
 
@@ -101,26 +130,44 @@ class GatingNetwork(nn.Module):
                 # No noise during inference
                 noisy_logits = clean_logits
             ret = noisy_logits
+        
+        # apply gumbel noise
+        tau = 1
+        if tau_cd and self.training: tau = cosine_decay(epoch, 300, 1, 0)
+        if tau_ed and self.training: tau = 10/(epoch+1)**0.5 
+        if gumbel_sigmoid:
+            return _gumbel_sigmoid(ret, tau=tau, training=self.training), ret, clean_gating_scores
+        elif gumbel_softmax:
+            return F.gumbel_softmax(ret, tau=tau, hard=(not self.training)), ret, clean_gating_scores
+
         return F.softmax(ret, dim=2), ret, clean_gating_scores
 
 
 # Define the Mixture of Experts Layer class
 class MoELayer(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_experts):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_experts=NUM_EXPERTS):
         super(MoELayer, self).__init__()
-        self.experts = nn.ModuleList([Expert(input_dim, hidden_dim, output_dim) for _ in range(num_experts)])
+        if no_op:
+            self.experts = []
+            for i in range(num_experts):
+                if i == 0:
+                    self.experts.append(NoOpExpert())
+                else:
+                    h = int(hidden_dim / (16 - (2*i))) # even harmonic 1/4 to 1/12
+                    self.experts.append(Expert(input_dim, h, output_dim))
+            self.experts = nn.ModuleList(self.experts)
+        else:
+            self.experts = nn.ModuleList([Expert(input_dim, hidden_dim, output_dim) for _ in range(num_experts)])
         self.gate = GatingNetwork(input_dim, num_experts)
         if deepseek_lb:
             self.expert_biases = nn.Parameter(torch.zeros(num_experts))
 
     def forward(self, x, num_experts_per_tok=K, epoch=None):
-        # import pdb; pdb.set_trace()
         x_shape = x.shape
-        # import pdb; pdb.set_trace()
         gating_scores, logits, clean_gating_scores = self.gate(x, epoch=epoch)
         if deepseek_lb:
             gating_scores_orig = gating_scores
-            gating_scores += self.expert_biases
+            gating_scores = gating_scores + self.expert_biases
         if len(x_shape) == 4:
             g_shape = gating_scores.shape
             gating_scores = gating_scores.reshape((g_shape[0], 

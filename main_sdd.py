@@ -14,7 +14,10 @@ from utils import *
 from models.mart import MART
 from loaders.dataloader_sdd import TrajectoryDataset
 import pickle
+from models.moe import deepseek_lb, K, NUM_EXPERTS
 # python main_sdd.py --config ./configs/mart_sdd.yaml --gpu 1 --tag div8_top2_zloss
+
+load_balance_layer_only = None #3 # set to None to do all layers
 
 load_balance = False
 load_balance_loss_only = False
@@ -175,7 +178,9 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
                 maxes, argmaxes = torch.max(score[k], -1)
                 argmaxes = argmaxes.flatten(-2, -1)
                 gating_scores_full = score[k].flatten(-3, -2)
-                for u in range(score[k].shape[0]):
+                for u in range(score[k].shape[0]): # layers
+                    if load_balance_layer_only is not None and u != load_balance_layer_only:
+                        continue
                     for v in range(score[k].shape[1]):
                         unq, unq_counts = argmaxes[u][v].unique(return_counts=True)
                         counts = torch.zeros(score[k].shape[-1]).long().cuda()
@@ -249,6 +254,46 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
 
                 
             optimizer.step()
+
+            # train deepseek expert biases layer
+            if deepseek_lb:
+                update_rate = 1e-2
+                for k in score: # these are the 4 different score types (pair_n, pair_e, group_n, group_e)
+                    for u in range(len(score[k])): # these are the layer numbers   
+                        if load_balance_layer_only is not None and u != load_balance_layer_only:
+                            continue              
+                        for v in range(len(score[k][u])): # there's only 1 dimension of this
+                            topk_scores, topk_idx = torch.topk(score[k][u][v], K, dim=-1, sorted=False)
+                            expert_counts = torch.bincount(topk_idx.flatten(), minlength=NUM_EXPERTS) 
+                            
+                            ### logging
+                            if k == 'pair_n':
+                                biases = model.pair_encoders[u].layers[v].linear_net_n.expert_biases.data
+                            elif k == 'pair_e':
+                                biases = model.pair_encoders[u].layers[v].linear_net2_e.expert_biases.data
+                            elif k == 'group_n':
+                                biases = model.hyper_encoders[u].layers[v].linear_net_n.expert_biases.data
+                            elif k == 'group_e':
+                                biases = model.hyper_encoders[u].layers[v].linear_net2_e.expert_biases.data
+                            tens = torch.stack([biases, expert_counts], dim=-1).cpu()
+                            lb_log[k][u].append(tens)  # to keep the logs aligned      
+                            
+                            avg_count = expert_counts.float().mean()
+                            for i, count in enumerate(expert_counts):
+                                # b_i = b_i + u + sign(e_i)
+                                # note: this is \bar{c_i} - c_i, NOT c_i - \bar{c_i}, which will push the network to
+                                # be maximally unbalanced. Really important to get this part right!!!
+                                error = avg_count - count.float()
+                                if k == 'pair_n':
+                                    model.pair_encoders[u].layers[v].linear_net_n.expert_biases.data[i] += update_rate * torch.sign(error)
+                                elif k == 'pair_e':
+                                    model.pair_encoders[u].layers[v].linear_net2_e.expert_biases.data[i] += update_rate * torch.sign(error)
+                                elif k == 'group_n':
+                                    model.hyper_encoders[u].layers[v].linear_net_n.expert_biases.data[i] += update_rate * torch.sign(error)
+                                elif k == 'group_e':
+                                    model.hyper_encoders[u].layers[v].linear_net2_e.expert_biases.data[i] += update_rate * torch.sign(error)
+
+                
 
             th = get_th(opts, model)
             print('[{}][{}] Epochs: {:02d}/{:02d}| It: {:04d}/{:04d} | Loss: {:03f} | Threshold: {} | LR: {}'

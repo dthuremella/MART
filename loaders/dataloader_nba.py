@@ -3,6 +3,7 @@ import numpy as np
 
 from torch.utils.data import Dataset
 
+ATTRIBUTE_DATASET = True
 
 class NBADataset(Dataset):
     """Dataloder for the Trajectory datasets"""
@@ -16,11 +17,23 @@ class NBADataset(Dataset):
         self.seq_len = self.obs_len + self.pred_len
 
         if mode == 'train' or mode == 'val':
-            data_root = './datasets/nba/nba_train.npy'
+            if ATTRIBUTE_DATASET:
+                data_root_players = './datasets/nba/trainset_players_xy.pkl.npy'
+                data_root_ball = './datasets/nba/trainset_ball_xy.pkl.npy'
+            else:
+                data_root = './datasets/nba/nba_train.npy'
         else:
-            data_root = './datasets/nba/nba_test.npy'
+            if ATTRIBUTE_DATASET:
+                data_root_players = './datasets/nba/testset_players_xy.pkl.npy'
+                data_root_ball = './datasets/nba/testset_ball_xy.pkl.npy'
+            else:
+                data_root = './datasets/nba/nba_test.npy'
 
-        self.trajs = np.load(data_root) 
+        if ATTRIBUTE_DATASET:
+            self.trajs = (np.load(data_root_players), np.load(data_root_ball))
+            self.trajs = np.concatenate(self.trajs, axis=-2)  # Concatenate 
+        else:
+            self.trajs = np.load(data_root) 
         self.trajs /= (94/28) # Turn to meters
 
         if mode == 'train':

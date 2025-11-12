@@ -4,11 +4,11 @@
 trap "kill 0" SIGINT
 
 # Run processes in parallel
-python main_eth.py --config "$1" --gpu "$2" --dataset eth --test &
-python main_eth.py --config "$1" --gpu "$2" --dataset hotel --test &
-python main_eth.py --config "$1" --gpu "$2" --dataset univ --test &
-python main_eth.py --config "$1" --gpu "$2" --dataset zara1 --test &
-python main_eth.py --config "$1" --gpu "$2" --dataset zara2 --test &
+python main_eth.py --config "$1" --gpu "$2" --tag "$3" --dataset eth --test &
+python main_eth.py --config "$1" --gpu "$2" --tag "$3" --dataset hotel --test &
+python main_eth.py --config "$1" --gpu "$2" --tag "$3" --dataset univ --test &
+python main_eth.py --config "$1" --gpu "$2" --tag "$3" --dataset zara1 --test &
+python main_eth.py --config "$1" --gpu "$2" --tag "$3" --dataset zara2 --test &
 wait
 
 # List of result files
