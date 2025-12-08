@@ -1,7 +1,7 @@
 import os
 import random
 import argparse
-
+import time
 from csv import writer
 
 import torch
@@ -14,12 +14,14 @@ from utils import *
 from models.mart import MART
 from loaders.dataloader_sdd import TrajectoryDataset
 import pickle
-from models.moe import deepseek_lb, K, NUM_EXPERTS
+from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman
 # python main_sdd.py --config ./configs/mart_sdd.yaml --gpu 1 --tag div8_top2_zloss
 
 load_balance_layer_only = None #3 # set to None to do all layers
 
-load_balance = False
+load_balance = True
+biased_loadbalance = True # bring average of chosen index down
+
 load_balance_loss_only = False
 router_z_loss = False 
 clip_router_grad = False
@@ -30,20 +32,23 @@ def my_collate(batch):
     '''
     batch_x = []
     batch_y = []
+    if kalman: batch_kalman = []
     for t in batch:
-        x, y = t
+        x, y, k = t
         batch_x.append(x)
         batch_y.append(y)
+        if kalman: batch_kalman.append(k)
 
     ## pad sequences with zeros  
     batch_x_padded = torch.nn.utils.rnn.pad_sequence(batch_x, batch_first=True)
     batch_y_padded = torch.nn.utils.rnn.pad_sequence(batch_y, batch_first=True)
+    batch_kalman_padded = torch.nn.utils.rnn.pad_sequence(batch_kalman, batch_first=True) if kalman else None
 
     ## add mask
     pad_ones = torch.nn.utils.rnn.pad_sequence(batch_x, batch_first=True, padding_value=1)
     mask = (batch_x_padded - pad_ones) + 1    ## ones for where there's values
     batch_x_mask = torch.cat((batch_x_padded, mask[:,:,:,:1]), dim=-1)
-    return batch_x_mask, batch_y_padded
+    return batch_x_mask, batch_y_padded, batch_kalman_padded
 
 def main():
     if args.seed >= 0:
@@ -85,7 +90,10 @@ def main():
         print('[INFO] Loading model from:', model_path)
         model_ckpt = torch.load(model_path)
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
+        t0 = time.time()
         ade, fde = test(model_ckpt['epoch'], model, loader_test)
+        t1 = time.time()
+        print('[INFO] Test Time: {:.2f}s'.format(t1 - t0)) 
         os.makedirs('results', exist_ok=True)
         with open(os.path.join('./results', '{}_result.csv'.format(args.dataset)), 'w', newline='') as f:
             csv_writer = writer(f)
@@ -158,8 +166,8 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
         batch_count += 1
         divider += 1
         
-        x_abs, y = data
-        x_abs, y = x_abs.cuda(), y.cuda()        
+        x_abs, y, kal = data
+        x_abs, y, kal = x_abs.cuda(), y.cuda(), kal.cuda() if kalman else None    
         
         batch_size, num_agents, length, _ = x_abs.size()
 
@@ -167,14 +175,14 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred, score, logit = model(x_abs, x_rel, epoch=epoch)
+        y_pred, score, logit, contrastive_loss = model(x_abs, x_rel, epoch=epoch, kalman_errors=kal if kalman else None)
         lb_loss = 0
         if load_balance:
             for k in score:
                 score[k] = torch.stack(score[k])
 
                 # load balancing loss
-                alpha = 1
+                alpha = 0.1
                 maxes, argmaxes = torch.max(score[k], -1)
                 argmaxes = argmaxes.flatten(-2, -1)
                 gating_scores_full = score[k].flatten(-3, -2)
@@ -186,9 +194,14 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
                         counts = torch.zeros(score[k].shape[-1]).long().cuda()
                         counts[unq] = unq_counts
                         fi = counts.float() / argmaxes.shape[-1]
-                        pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
-                        loss_load_balance = alpha * pi.shape[0] * torch.dot(fi, pi)
-                        lb_loss += loss_load_balance
+
+                        if biased_loadbalance:
+                            loss_load_balance = torch.dot(fi, torch.tensor(list(range(NUM_EXPERTS))).float().cuda())
+                        else:
+                            pi = torch.sum(gating_scores_full[u][v], dim=-2) / argmaxes.shape[-1]
+                            loss_load_balance = pi.shape[0] * torch.dot(fi, pi)
+
+                        lb_loss += loss_load_balance * alpha
                         if lb_log is not None: lb_log[k][u].append(loss_load_balance.item())
             lb_loss /= (len(score) * score[k].shape[0] * score[k].shape[1])
         z_loss = 0
@@ -223,6 +236,8 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
                                 dim=2)[0] * mask    # mask out loss for invalid
                             ) 
             total_loss += (lb_loss + z_loss)
+            if kalman and contrastive_loss is not None:
+                total_loss = total_loss + contrastive_loss
         
         avg_meter['loss'] += total_loss.item()
         avg_meter['counter'] += mask.sum()
@@ -256,42 +271,42 @@ def train(epoch, model, optimizer, loader, lb_log=None, z_log=None):
             optimizer.step()
 
             # train deepseek expert biases layer
-            if deepseek_lb:
-                update_rate = 1e-2
-                for k in score: # these are the 4 different score types (pair_n, pair_e, group_n, group_e)
-                    for u in range(len(score[k])): # these are the layer numbers   
-                        if load_balance_layer_only is not None and u != load_balance_layer_only:
-                            continue              
-                        for v in range(len(score[k][u])): # there's only 1 dimension of this
-                            topk_scores, topk_idx = torch.topk(score[k][u][v], K, dim=-1, sorted=False)
-                            expert_counts = torch.bincount(topk_idx.flatten(), minlength=NUM_EXPERTS) 
+            # if deepseek_lb:
+            #     update_rate = 1e-2
+            #     for k in score: # these are the 4 different score types (pair_n, pair_e, group_n, group_e)
+            #         for u in range(len(score[k])): # these are the layer numbers   
+            #             if load_balance_layer_only is not None and u != load_balance_layer_only:
+            #                 continue              
+            #             for v in range(len(score[k][u])): # there's only 1 dimension of this
+            #                 topk_scores, topk_idx = torch.topk(score[k][u][v], K, dim=-1, sorted=False)
+            #                 expert_counts = torch.bincount(topk_idx.flatten(), minlength=NUM_EXPERTS) 
                             
-                            ### logging
-                            if k == 'pair_n':
-                                biases = model.pair_encoders[u].layers[v].linear_net_n.expert_biases.data
-                            elif k == 'pair_e':
-                                biases = model.pair_encoders[u].layers[v].linear_net2_e.expert_biases.data
-                            elif k == 'group_n':
-                                biases = model.hyper_encoders[u].layers[v].linear_net_n.expert_biases.data
-                            elif k == 'group_e':
-                                biases = model.hyper_encoders[u].layers[v].linear_net2_e.expert_biases.data
-                            tens = torch.stack([biases, expert_counts], dim=-1).cpu()
-                            lb_log[k][u].append(tens)  # to keep the logs aligned      
+            #                 ### logging
+            #                 if k == 'pair_n':
+            #                     biases = model.pair_encoders[u].layers[v].linear_net_n.expert_biases.data
+            #                 elif k == 'pair_e':
+            #                     biases = model.pair_encoders[u].layers[v].linear_net2_e.expert_biases.data
+            #                 elif k == 'group_n':
+            #                     biases = model.hyper_encoders[u].layers[v].linear_net_n.expert_biases.data
+            #                 elif k == 'group_e':
+            #                     biases = model.hyper_encoders[u].layers[v].linear_net2_e.expert_biases.data
+            #                 tens = torch.stack([biases, expert_counts], dim=-1).cpu()
+            #                 lb_log[k][u].append(tens)  # to keep the logs aligned      
                             
-                            avg_count = expert_counts.float().mean()
-                            for i, count in enumerate(expert_counts):
-                                # b_i = b_i + u + sign(e_i)
-                                # note: this is \bar{c_i} - c_i, NOT c_i - \bar{c_i}, which will push the network to
-                                # be maximally unbalanced. Really important to get this part right!!!
-                                error = avg_count - count.float()
-                                if k == 'pair_n':
-                                    model.pair_encoders[u].layers[v].linear_net_n.expert_biases.data[i] += update_rate * torch.sign(error)
-                                elif k == 'pair_e':
-                                    model.pair_encoders[u].layers[v].linear_net2_e.expert_biases.data[i] += update_rate * torch.sign(error)
-                                elif k == 'group_n':
-                                    model.hyper_encoders[u].layers[v].linear_net_n.expert_biases.data[i] += update_rate * torch.sign(error)
-                                elif k == 'group_e':
-                                    model.hyper_encoders[u].layers[v].linear_net2_e.expert_biases.data[i] += update_rate * torch.sign(error)
+            #                 avg_count = expert_counts.float().mean()
+            #                 for i, count in enumerate(expert_counts):
+            #                     # b_i = b_i + u + sign(e_i)
+            #                     # note: this is \bar{c_i} - c_i, NOT c_i - \bar{c_i}, which will push the network to
+            #                     # be maximally unbalanced. Really important to get this part right!!!
+            #                     error = avg_count - count.float()
+            #                     if k == 'pair_n':
+            #                         model.pair_encoders[u].layers[v].linear_net_n.expert_biases.data[i] += update_rate * torch.sign(error)
+            #                     elif k == 'pair_e':
+            #                         model.pair_encoders[u].layers[v].linear_net2_e.expert_biases.data[i] += update_rate * torch.sign(error)
+            #                     elif k == 'group_n':
+            #                         model.hyper_encoders[u].layers[v].linear_net_n.expert_biases.data[i] += update_rate * torch.sign(error)
+            #                     elif k == 'group_e':
+            #                         model.hyper_encoders[u].layers[v].linear_net2_e.expert_biases.data[i] += update_rate * torch.sign(error)
 
                 
 
@@ -309,7 +324,7 @@ def test(epoch, model, loader):
         scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
         xs, ys, ypreds = [], [], []
         for _, data in enumerate(loader):
-            x_abs, y = data
+            x_abs, y, kal = data
             x_abs, y = x_abs.cuda(), y.cuda()        
             
             batch_size, num_agents, length, _ = x_abs.size()
@@ -318,7 +333,7 @@ def test(epoch, model, loader):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred, score, logit = model(x_abs, x_rel)
+            y_pred, score, logit, contrastive_loss = model(x_abs, x_rel)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)

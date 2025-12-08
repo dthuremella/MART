@@ -2,6 +2,7 @@ import pickle
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from models.moe import kalman, kalman_score
 
 
 class TrajectoryDataset(Dataset):
@@ -42,5 +43,11 @@ class TrajectoryDataset(Dataset):
         future_traj = self.traj[index][:, self.obs_len:] * self.scale
         past_traj = torch.from_numpy(past_traj).type(torch.float)
         future_traj = torch.from_numpy(future_traj).type(torch.float)
-        
-        return [past_traj, future_traj]
+
+        kalman_error = None
+        if kalman:
+            total_traj = self.traj[index] * self.scale
+            total_traj = torch.from_numpy(total_traj).type(torch.float)
+            kalman_error = kalman_score(total_traj, self.obs_len, self.pred_len)
+            
+        return [past_traj, future_traj, kalman_error]

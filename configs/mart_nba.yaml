@@ -9,6 +9,8 @@ sample_k: 20
 aggregation: 'avg'
 function_type: 2
 hyper_scales: [1, 'adaptive']
+positive_thresh: 1.2
+negative_thresh: 4
 
 # input/output params
 past_length: 10

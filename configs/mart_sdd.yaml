@@ -16,6 +16,8 @@ future_length: 12
 inputs: ['vel_x', 'vel_y', 'mask']
 pred_rel: True
 scale: 1.86
+positive_thresh: 1
+negative_thresh: 20
 
 # training params
 num_epochs: 300

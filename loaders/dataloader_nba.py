@@ -2,8 +2,9 @@ import torch
 import numpy as np
 
 from torch.utils.data import Dataset
+from models.moe import kalman, kalman_score
 
-ATTRIBUTE_DATASET = True
+ATTRIBUTE_DATASET = False
 
 class NBADataset(Dataset):
     """Dataloder for the Trajectory datasets"""
@@ -52,6 +53,12 @@ class NBADataset(Dataset):
     def __getitem__(self, index):
         past_traj = self.traj_abs[index, :, :self.obs_len, :]
         future_traj = self.traj_abs[index, :, self.obs_len:, :]
-        out = [past_traj, future_traj]
+
+        kalman_error = None
+        if kalman:
+            kalman_error = kalman_score(self.traj_abs[index], self.obs_len, self.pred_len)
+            out = [past_traj, future_traj, kalman_error]
+        else:
+            out = [past_traj, future_traj]
         
         return out

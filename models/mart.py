@@ -5,8 +5,32 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
-# from .moe import MoELayer
+from .moe import kalman
 
+def contrastive_three_modes_loss(features, scores, temp=0.1, base_temperature=0.07, positive_thresh=0.1, negative_thresh=2.0):
+    device = (torch.device('cuda') if features.is_cuda
+              else torch.device('cpu'))
+    batch_size = features.shape[0]
+    scores = scores.contiguous().view(-1, 1)
+    mask_positives = (torch.abs(scores.sub(scores.T)) < positive_thresh).float().to(device)
+    mask_negatives = (torch.abs(scores.sub(scores.T)) > negative_thresh).float().to(device)
+    mask_neutral = mask_positives + mask_negatives
+
+    anchor_dot_contrast = torch.div(torch.matmul(features, features.T), temp)
+    logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+    logits = anchor_dot_contrast - logits_max.detach()
+
+    logits_mask = torch.scatter(
+        torch.ones_like(mask_positives), 1,
+        torch.arange(batch_size).view(-1, 1).to(device), 0) * mask_neutral
+    mask_positives = mask_positives * logits_mask
+    exp_logits = torch.exp(logits) * logits_mask
+    log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-20)
+    mean_log_prob_pos = (mask_positives * log_prob).sum(1) / (mask_positives.sum(1) + 1e-20)
+
+    loss = - (temp / base_temperature) * mean_log_prob_pos
+    loss = loss.view(1, batch_size).mean()
+    return loss, mask_positives.sum(1).mean(), mask_negatives.sum(1).mean()
 
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims=(1024, 512), activation='relu'):
@@ -148,7 +172,7 @@ class MART(nn.Module):
         for i in range(args.sample_k):
             self.add_module("head_%d" % i, Decoder(args))
         
-    def forward(self, x_abs, x_rel, epoch=None):
+    def forward(self, x_abs, x_rel, kalman_errors=None, epoch=None):
         inputs = []
         batch_size, num_agents, length, _ = x_abs.shape
         cur_pos = x_abs[:, :, [-1]].view(batch_size*num_agents, 1, -1).contiguous()
@@ -165,6 +189,24 @@ class MART(nn.Module):
         inputs_pos = self.pos_encoder(inputs_fc, num_a=batch_size*num_agents)
         inputs_pos = inputs_pos.view(batch_size, num_agents, length, self.args.model_dim)
         n_initial = self.input_fc2(inputs_pos.contiguous().view(batch_size, num_agents, length*self.args.model_dim))
+
+        # Contrastive Kalman
+        contrastive_loss = None
+        if kalman and self.training:
+            if x_abs.shape[-1] == 3: #if it has a mask
+                valid_embeddings = n_initial[torch.where(x_abs[:,:,-1,-1] == 1)] # where mask (last layer of 4th dim) is valid
+                kalman_scores = kalman_errors[torch.where(x_abs[:,:,-1,-1] == 1)]
+            else: # nba dataset needs no mask
+                valid_embeddings = n_initial.flatten(0,1)  # (B*N, D)
+                kalman_scores = kalman_errors.flatten(0,1)
+            if hasattr(self.args, 'positive_thresh') and hasattr(self.args, 'negative_thresh'):
+                positive_thresh = self.args.positive_thresh
+                negative_thresh = self.args.negative_thresh
+            else:
+                positive_thresh = 0.1
+                negative_thresh = 2.0
+            contrastive_loss, _, _ = contrastive_three_modes_loss(valid_embeddings, kalman_scores, temp=0.5, 
+                                            positive_thresh=positive_thresh, negative_thresh=negative_thresh)
         
         n_pair, e_pair = n_initial, None
         n_group, e_group, G = n_initial, None, None
@@ -198,5 +240,5 @@ class MART(nn.Module):
         out = torch.cat(out_list, dim=2)
         out = out.view(batch_size, num_agents, self.args.sample_k, self.args.future_length, -1)
         
-        return out, scores, logits
+        return out, scores, logits, contrastive_loss
     

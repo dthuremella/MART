@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .moe import MoELayer, smallest_final_layer
+from .moe import MoELayer, smallest_final_layer, one_router_same_expert, linearnet1e
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -160,8 +160,11 @@ class RT(nn.Module):
         scores_e = []
         logits_n = []
         logits_e = []
+        prev_gating_scores = None
         for layer in self.layers:
-            node_features, edge_features, score, logit = layer(node_features, edge_features, epoch=epoch)
+            node_features, edge_features, score, logit = layer(node_features, edge_features, epoch=epoch, prev_gating_scores=prev_gating_scores)
+            if one_router_same_expert:
+                prev_gating_scores = score
             scores_n.append(score[0])
             scores_e.append(score[1])
             logits_n.append(logit[0])
@@ -202,8 +205,11 @@ class RTNoEdgeInit(nn.Module):
         scores_e = []
         logits_n = []
         logits_e = []
+        prev_gating_scores = None
         for layer in self.layers:
-            node_features, edge_features, score, logit = layer(node_features, edge_features, epoch=epoch)
+            node_features, edge_features, score, logit = layer(node_features, edge_features, epoch=epoch, prev_gating_scores=prev_gating_scores)
+            if one_router_same_expert:
+                prev_gating_scores = score
             scores_n.append(score[0])
             scores_e.append(score[1])
             logits_n.append(logit[0])
@@ -246,39 +252,45 @@ class RTTransformerLayer(nn.Module):
         self.norm2_n = nn.LayerNorm(node_dim)
 
         if self.edge_update:
-            self.linear_net1_e = \
-                nn.Sequential(
-                    nn.Linear(node_dim * 2 + edge_dim * 2, edge_hidden_dim_1),
-                    # nn.Dropout(dropout),
-                    nn.ReLU(inplace=True),
-                    nn.Linear(edge_hidden_dim_1, edge_dim),
-                )
-                # MoELayer(node_dim * 2 + edge_dim * 2, 
-                #     edge_hidden_dim_1, 
-                #     edge_dim)
+            if linearnet1e:
+                self.linear_net1_e = \
+                    MoELayer(node_dim * 2 + edge_dim * 2, 
+                        edge_hidden_dim_1, 
+                        edge_dim)
 
-            self.linear_net2_e = \
-                MoELayer(edge_dim, 
-                    edge_hidden_dim_2, 
-                    edge_dim)
-                # nn.Sequential(
-                #     nn.Linear(edge_dim, edge_hidden_dim_2),
-                #     # nn.Dropout(dropout),
-                #     nn.ReLU(inplace=True),
-                #     nn.Linear(edge_hidden_dim_2, edge_dim),
-                # )
+                self.linear_net2_e = \
+                    nn.Sequential(
+                        nn.Linear(edge_dim, edge_hidden_dim_2),
+                        # nn.Dropout(dropout),
+                        nn.ReLU(inplace=True),
+                        nn.Linear(edge_hidden_dim_2, edge_dim),
+                    )
+            else:    
+                self.linear_net1_e = \
+                    nn.Sequential(
+                        nn.Linear(node_dim * 2 + edge_dim * 2, edge_hidden_dim_1),
+                        # nn.Dropout(dropout),
+                        nn.ReLU(inplace=True),
+                        nn.Linear(edge_hidden_dim_1, edge_dim),
+                    )
+
+                self.linear_net2_e = \
+                    MoELayer(edge_dim, 
+                        edge_hidden_dim_2, 
+                        edge_dim)
 
             
             self.norm1_e = nn.LayerNorm(edge_dim)
             self.norm2_e = nn.LayerNorm(edge_dim)
     
-    def forward(self, node_features, edge_features, epoch=None):
+    def forward(self, node_features, edge_features, epoch=None, prev_gating_scores=None):
         _, N, _ = node_features.shape
         attn_out = self.attention_layer(node_features, edge_features)
         node_features = node_features + self.dropout(attn_out)
         node_features = self.norm1_n(node_features)
         
-        linear_out, scores_n, logits_n = self.linear_net_n(node_features, epoch=epoch)
+        ########## Node MLP with MoE ##########
+        linear_out, scores_n, logits_n = self.linear_net_n(node_features, epoch=epoch, prev_gating_scores=prev_gating_scores)
         node_features = node_features + self.dropout(linear_out)
         node_features = self.norm2_n(node_features)
         
@@ -293,13 +305,24 @@ class RTTransformerLayer(nn.Module):
             
             concatenated_inputs = torch.cat([edge_features, reversed_edge_features, expanded_source_nodes, expanded_target_nodes], dim=-1)
             # import pdb; pdb.set_trace()
-            edge_features = self.linear_net1_e(concatenated_inputs)
-            edge_features = edge_features + self.dropout(edge_features)
-            edge_features = self.norm1_e(edge_features)
-            
-            edge_features, scores_e, logits_e = self.linear_net2_e(edge_features, epoch=epoch)
-            edge_features = edge_features + self.dropout(edge_features)
-            edge_features = self.norm2_e(edge_features)
+            if linearnet1e:
+                ########## Edge MLP with MoE ##########
+                edge_features, scores_e, logits_e = self.linear_net1_e(concatenated_inputs, epoch=epoch, prev_gating_scores=prev_gating_scores)
+                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = self.norm1_e(edge_features)
+                
+                edge_features = self.linear_net2_e(edge_features)
+                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = self.norm2_e(edge_features)
+            else:
+                edge_features = self.linear_net1_e(concatenated_inputs)
+                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = self.norm1_e(edge_features)
+                
+                ########## Edge MLP with MoE ##########
+                edge_features, scores_e, logits_e = self.linear_net2_e(edge_features, epoch=epoch, prev_gating_scores=prev_gating_scores)
+                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = self.norm2_e(edge_features)
 
         # import pdb; pdb.set_trace()
         
