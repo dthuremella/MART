@@ -5,7 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
-from .moe import kalman
+from .moe import kalman, cls_head, linearnet1e
 
 def contrastive_three_modes_loss(features, scores, temp=0.1, base_temperature=0.07, positive_thresh=0.1, negative_thresh=2.0):
     device = (torch.device('cuda') if features.is_cuda
@@ -134,6 +134,17 @@ class MART(nn.Module):
             'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
             'dropout': args.dropout,
         }
+        if linearnet1e:
+            module_args = {
+                'num_layers': 1,
+                'num_heads': args.num_heads,
+                'node_dim': args.model_dim,
+                'node_hidden_dim': int(args.hidden_dim / args.div_by),
+                'edge_dim': args.model_dim,
+                'edge_hidden_dim_1': int(args.hidden_dim / args.div_by),
+                'edge_hidden_dim_2': args.hidden_dim,
+                'dropout': args.dropout,
+            }
         
         self.input_dim = len(args.inputs)
         self.input_fc = nn.Linear(self.input_dim, args.model_dim)

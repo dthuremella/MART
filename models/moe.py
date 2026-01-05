@@ -14,6 +14,8 @@ import torch.nn.functional as F
 import math
 import numpy as np
 
+cls_head = True
+
 two_layer_router = False
 
 one_router_same_expert = False
@@ -93,13 +95,14 @@ class Expert(nn.Module):
 class NoOpExpert(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(NoOpExpert, self).__init__()
-        if linearnet1e:
-            self.fc = nn.Linear(input_dim, output_dim)
+        # if linearnet1e:
+        #     self.fc = nn.Linear(input_dim, output_dim)
     def forward(self, x):
-        if linearnet1e:
-            return self.fc(x)
-        else:
-            return x
+        # if linearnet1e:
+        #     return self.fc(x)
+        # else:
+        #     return x
+        return x
 
 # Define the Gating Network class
 class GatingNetwork(nn.Module):
@@ -244,7 +247,7 @@ class MoELayer(nn.Module):
                     # Create a mask for tokens that selected expert i
                     expert_mask = (topk_indices == i).any(dim=2).float().unsqueeze(-1)  # [batch_size, num_tokens, 1]
                     if expert_mask.sum() > 0:
-                        expert_output = self.experts[i](x) * expert_mask  # [batch_size, num_tokens, output_dim]
+                        expert_output = self.experts[i](x) * expert_mask  # [batch_size, num_tokens, output_dim] ##### TODO: mask x, pass it through, view it back
                     else:
                         expert_output = torch.zeros((batch_size, num_tokens, x.shape[-1]), device=x.device)
                     expert_outputs_list.append(expert_output)
