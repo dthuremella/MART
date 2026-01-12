@@ -19,7 +19,7 @@ from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman
 
 load_balance_layer_only = None #3 # set to None to do all layers
 
-load_balance = True
+load_balance = False
 biased_loadbalance = True # bring average of chosen index down
 
 load_balance_loss_only = False

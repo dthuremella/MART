@@ -64,7 +64,7 @@ pip install -r requirements.txt
 * Train MART on the NBA dataset
 
   ```
-  python main_nba.py --config ./configs/mart_nba.yaml --gpu $GPU_ID
+  python main_nba.py --config ./configs/mart_nba.yaml --gpu 0 --tag div1_top2_gumbelsoftmax_noopevenharmonic_biasedlb
   ```
 
 * Test MART on the NBA dataset after training

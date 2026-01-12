@@ -41,7 +41,7 @@ K = 2  # Number of experts to use per token for top-k gating
 
 NUM_EXPERTS = 8  # Total number of experts in the MoE layer
 
-test_calculate_all_expert_outputs = False
+test_calculate_all_expert_outputs = True # True for baseline and fastest method
 
 
 def _gumbel_sigmoid(logits, tau=1, training=True):
@@ -193,7 +193,13 @@ class MoELayer(nn.Module):
             gating_scores = prev_gating_scores
             logits = None
         else:
-            gating_scores, logits, clean_gating_scores = self.gate(x, epoch=epoch)
+            if cls_head:
+                # use only cls token for gating
+                if len(x_shape) == 4: gating_input = x[:,:1, :1]
+                else: gating_input = x[:,:1]
+            else:
+                gating_input = x
+            gating_scores, logits, clean_gating_scores = self.gate(gating_input, epoch=epoch)
             if deepseek_lb:
                 gating_scores_orig = gating_scores
                 gating_scores = gating_scores + self.expert_biases

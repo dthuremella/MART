@@ -16,7 +16,7 @@ from loaders.dataloader_nba import NBADataset
 from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman
 
 load_balance = False
-biased_loadbalance = False # bring average of chosen index down
+biased_loadbalance = True # bring average of chosen index down
 load_balance_layer_only = None #3 # set to None to do all layers
 
 import pickle
