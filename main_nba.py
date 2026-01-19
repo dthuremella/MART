@@ -13,11 +13,12 @@ from torch.optim import lr_scheduler
 from utils import *
 from models.mart import MART
 from loaders.dataloader_nba import NBADataset, attribute_dataset
-from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman
+from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman, nomoe
 
 load_balance = False
-biased_loadbalance = True # bring average of chosen index down
+biased_loadbalance = False # bring average of chosen index down
 load_balance_layer_only = None #3 # set to None to do all layers
+fast = True
 
 import pickle
 
@@ -57,7 +58,12 @@ def main():
         print('[INFO] Loading model from:', model_path)
         model_ckpt = torch.load(model_path)
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
-        ade, fde = test(model_ckpt['epoch'], model, loader_test)
+        if nomoe:
+            fde, ade = test_nomoe(model_ckpt['epoch'], model, loader_test)
+        elif fast:
+            ade, fde = test_fast(model_ckpt['epoch'], model, loader_test)
+        else:
+            ade, fde = test(model_ckpt['epoch'], model, loader_test)
         os.makedirs('results', exist_ok=True)
         with open(os.path.join('./results', '{}_{}_result.csv'.format(args.dataset, args.tag)), 'w', newline='') as f:
             csv_writer = writer(f)
@@ -248,7 +254,7 @@ def test(epoch, model, loader):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred, score, logit, contrastive_loss = model(x_abs, x_rel)
+            y_pred, score = model(x_abs, x_rel)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -307,6 +313,124 @@ def test(epoch, model, loader):
     print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_4']) / avg_meter['counter'], np.sum(avg_meter['fde_4']) / avg_meter['counter']))
 
     return avg_meter['ade_4'], avg_meter['fde_4']
+
+
+def test_fast(epoch, model, loader):
+    model.eval()
+    avg_meter = {'epoch': epoch, 'ade_1': [], 'ade_2': [], 'ade_3': [], 'ade_4': [], 'fde_1': [], 'fde_2': [], 'fde_3': [], 'fde_4': [], 'counter': 0}
+
+    with torch.no_grad():
+        scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
+        xs, ys, ypreds = [], [], []
+        t0 = time.time()
+        for _, data in enumerate(loader):
+            x_abs, y = data
+            x_abs, y = x_abs.cuda(), y.cuda()        
+            
+            batch_size, num_agents, length, _ = x_abs.size()
+
+            x_rel = torch.zeros_like(x_abs)
+            x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
+            x_rel[:, :, 0] = x_rel[:, :, 1]
+            
+            y_pred, score = model(x_abs, x_rel)
+
+            if opts.pred_rel:
+                cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
+                y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
+
+            y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
+            y = np.array(y.cpu()) # B, N, T, 2
+            y = y[:, :, None, :, :]
+            
+            ade_1 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :5] - y[:, :, :, :5], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            fde_1 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 4:5] - y[:, :, :, 4:5], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            ade_2 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :10] - y[:, :, :, :10], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            fde_2 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 9:10] - y[:, :, :, 9:10], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            ade_3 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :15] - y[:, :, :, :15], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            fde_3 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 14:15] - y[:, :, :, 14:15], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            ade_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            fde_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+
+            avg_meter['ade_1'].append(ade_1)
+            avg_meter['fde_1'].append(fde_1)
+            avg_meter['ade_2'].append(ade_2)
+            avg_meter['fde_2'].append(fde_2)
+            avg_meter['ade_3'].append(ade_3)
+            avg_meter['fde_3'].append(fde_3)
+            avg_meter['ade_4'].append(ade_4)
+            avg_meter['fde_4'].append(fde_4)
+
+            avg_meter['counter'] += (num_agents * batch_size)
+
+        t1 = time.time()
+        print('[INFO] Test Time: {:.2f}s'.format(t1 - t0))
+    
+    th = get_th(opts, model)
+    print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
+    print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_1']) / avg_meter['counter'], np.sum(avg_meter['fde_1']) / avg_meter['counter']))
+    print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_2']) / avg_meter['counter'], np.sum(avg_meter['fde_2']) / avg_meter['counter']))
+    print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_3']) / avg_meter['counter'], np.sum(avg_meter['fde_3']) / avg_meter['counter']))
+    print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_4']) / avg_meter['counter'], np.sum(avg_meter['fde_4']) / avg_meter['counter']))
+
+    return avg_meter['ade_4'], avg_meter['fde_4']
+
+def test_nomoe(epoch, model, loader):
+    model.eval()
+    avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
+    
+    with torch.no_grad():
+        t0 = time.time()
+        for _, data in enumerate(loader):
+            x_abs, y = data
+            x_abs, y = x_abs.cuda(), y.cuda()        
+            
+            batch_size, num_agents, length, _ = x_abs.size()
+
+            x_rel = torch.zeros_like(x_abs)
+            x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
+            x_rel[:, :, 0] = x_rel[:, :, 1]
+            
+            y_pred = model(x_abs, x_rel)
+
+            if opts.pred_rel:
+                cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
+                y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
+
+            y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
+            y = np.array(y.cpu()) # B, N, T, 2
+            y = y[:, :, None, :, :]
+            
+            ade_1 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :5] - y[:, :, :, :5], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            fde_1 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 4:5] - y[:, :, :, 4:5], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            ade_2 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :10] - y[:, :, :, :10], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            fde_2 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 9:10] - y[:, :, :, 9:10], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            ade_3 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :15] - y[:, :, :, :15], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            fde_3 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 14:15] - y[:, :, :, 14:15], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            ade_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            fde_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+                        
+            avg_meter['ade_1'] += ade_1
+            avg_meter['fde_1'] += fde_1
+            avg_meter['ade_2'] += ade_2
+            avg_meter['fde_2'] += fde_2
+            avg_meter['ade_3'] += ade_3
+            avg_meter['fde_3'] += fde_3
+            avg_meter['ade_4'] += ade_4
+            avg_meter['fde_4'] += fde_4
+            
+            avg_meter['counter'] += (num_agents * batch_size)
+        t1 = time.time()
+        print('[INFO] Test Time: {:.2f}s'.format(t1 - t0))
+    
+    th = get_th(opts, model)
+    print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
+    print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_1'] / avg_meter['counter'], avg_meter['fde_1'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_2'] / avg_meter['counter'], avg_meter['fde_2'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_3'] / avg_meter['counter'], avg_meter['fde_3'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']))
+    
+    return avg_meter['fde_4'] / avg_meter['counter'], avg_meter['ade_4'] / avg_meter['counter']
 
 
 if __name__ == "__main__":

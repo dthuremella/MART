@@ -345,21 +345,17 @@ class RTTransformerLayer(nn.Module):
                 edge_features = edge_features + self.dropout(edge_features)
                 edge_features = self.norm1_e(edge_features)
                 
-                edge_features = self.linear_net2_e(edge_features)
-                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
                 edge_features = self.norm2_e(edge_features)
             elif nomoe:
-                edge_features = self.linear_net1_e(concatenated_inputs)
-                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = edge_features + self.dropout(self.linear_net1_e(concatenated_inputs))
                 edge_features = self.norm1_e(edge_features)
                 
-                edge_features = self.linear_net2_e(edge_features)
-                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
                 edge_features = self.norm2_e(edge_features)
                 (scores_n, scores_e), (logits_n, logits_e) = (None, None), (None, None)
             else:
-                edge_features = self.linear_net1_e(concatenated_inputs)
-                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = edge_features + self.dropout(self.linear_net1_e(concatenated_inputs))
                 edge_features = self.norm1_e(edge_features)
                 
                 ########## Edge MLP with MoE ##########

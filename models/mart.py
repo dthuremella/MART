@@ -124,16 +124,6 @@ class MART(nn.Module):
         super(MART, self).__init__()
         self.args = args
 
-        module_args = {
-            'num_layers': 1,
-            'num_heads': args.num_heads,
-            'node_dim': args.model_dim,
-            'node_hidden_dim': int(args.hidden_dim / args.div_by),
-            'edge_dim': args.model_dim,
-            'edge_hidden_dim_1': args.hidden_dim,
-            'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
-            'dropout': args.dropout,
-        }
         if linearnet1e:
             module_args = {
                 'num_layers': 1,
@@ -154,6 +144,17 @@ class MART(nn.Module):
                 'edge_dim': args.model_dim,
                 'edge_hidden_dim_1': args.hidden_dim,
                 'edge_hidden_dim_2': args.hidden_dim,
+                'dropout': args.dropout,
+            }
+        else:
+            module_args = {
+                'num_layers': 1,
+                'num_heads': args.num_heads,
+                'node_dim': args.model_dim,
+                'node_hidden_dim': int(args.hidden_dim / args.div_by),
+                'edge_dim': args.model_dim,
+                'edge_hidden_dim_1': args.hidden_dim,
+                'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
                 'dropout': args.dropout,
             }
 
@@ -272,5 +273,9 @@ class MART(nn.Module):
         out = out.view(batch_size, num_agents, self.args.sample_k, self.args.future_length, -1)
         if cls_head:
             out = out[:,1:,:,:]
+        if nomoe:
+            return out
+        if not self.training:
+            return out, scores
         return out, scores, logits, contrastive_loss
     

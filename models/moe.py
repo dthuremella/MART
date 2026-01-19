@@ -14,9 +14,9 @@ import torch.nn.functional as F
 import math
 import numpy as np
 
-nomoe = True
+nomoe = False
 
-cls_head = False
+cls_head = True
 
 two_layer_router = False
 
@@ -267,24 +267,7 @@ class MoELayer(nn.Module):
                         
                         # Place results back in correct positions
                         expert_outputs[batch_indices, expert_idx] = expert_output
-                # # During inference, only compute outputs for the top-k experts
-                # expert_outputs_list = []
-                # for i in range(NUM_EXPERTS):
-                #     # Create a mask for tokens that selected expert i
-                #     expert_mask = (topk_indices == i).any(dim=2).float().unsqueeze(-1)  # [batch_size, num_tokens, 1]
-                #     if expert_mask.sum() > 0:
-                #         if 1 in topk_indices:
-                #             import pdb; pdb.set_trace()
-                #         masked_x = x * expert_mask
-                #         # get indices where expert_mask is non-zero
-                #         # put non-zero values through expert
-                #         # replace sparse tensor values with correct expert outputs
-                #         expert_output = self.experts[i](masked_x)  # [batch_size, num_tokens, output_dim] ##### TODO: mask x, pass it through, view it back
-                #     else:
-                #         expert_output = torch.zeros((batch_size, num_tokens, x.shape[-1]), device=x.device)
-                #     expert_outputs_list.append(expert_output)
-                # expert_outputs = torch.stack(expert_outputs_list, dim=1)  # [batch_size, num_experts, num_tokens, output_dim]
-        
+
         expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
         output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs) # [batch_size, num_tokens, output_dim]
 
