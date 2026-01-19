@@ -12,7 +12,7 @@ from torch.optim import lr_scheduler
 
 from utils import *
 from models.mart import MART
-from loaders.dataloader_nba import NBADataset
+from loaders.dataloader_nba import NBADataset, attribute_dataset
 from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman
 
 load_balance = False
@@ -57,12 +57,9 @@ def main():
         print('[INFO] Loading model from:', model_path)
         model_ckpt = torch.load(model_path)
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
-        t0 = time.time()
         ade, fde = test(model_ckpt['epoch'], model, loader_test)
-        t1 = time.time()
-        print('[INFO] Test Time: {:.2f}s'.format(t1 - t0))
         os.makedirs('results', exist_ok=True)
-        with open(os.path.join('./results', '{}_result.csv'.format(args.dataset)), 'w', newline='') as f:
+        with open(os.path.join('./results', '{}_{}_result.csv'.format(args.dataset, args.tag)), 'w', newline='') as f:
             csv_writer = writer(f)
             csv_writer.writerow([os.path.basename(args.config).split('.')[0], ade, fde])
         exit()
@@ -232,11 +229,12 @@ def train(epoch, model, optimizer, loader, lb_log=None):
 
 def test(epoch, model, loader):
     model.eval()
-    avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
-    
+    avg_meter = {'epoch': epoch, 'ade_1': [], 'ade_2': [], 'ade_3': [], 'ade_4': [], 'fde_1': [], 'fde_2': [], 'fde_3': [], 'fde_4': [], 'counter': 0}
+
     with torch.no_grad():
         scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
         xs, ys, ypreds = [], [], []
+        t0 = time.time()
         for _, data in enumerate(loader):
             if kalman:
                 x_abs, y, kal = data
@@ -257,8 +255,11 @@ def test(epoch, model, loader):
                 y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
 
             for k in score:
-                score[k] = torch.stack(score[k])
-                scores[k].append(score[k])
+                if score[k] is None:
+                    continue
+                if len(score[k]) > 0:
+                    score[k] = torch.stack(score[k])
+                    scores[k].append(score[k])
             xs.append(x_abs)
             ys.append(y)
             ypreds.append(y_pred)
@@ -275,32 +276,37 @@ def test(epoch, model, loader):
             fde_3 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 14:15] - y[:, :, :, 14:15], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             ade_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             fde_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
-                        
-            avg_meter['ade_1'] += ade_1
-            avg_meter['fde_1'] += fde_1
-            avg_meter['ade_2'] += ade_2
-            avg_meter['fde_2'] += fde_2
-            avg_meter['ade_3'] += ade_3
-            avg_meter['fde_3'] += fde_3
-            avg_meter['ade_4'] += ade_4
-            avg_meter['fde_4'] += fde_4
-            
+
+            avg_meter['ade_1'].append(ade_1)
+            avg_meter['fde_1'].append(fde_1)
+            avg_meter['ade_2'].append(ade_2)
+            avg_meter['fde_2'].append(fde_2)
+            avg_meter['ade_3'].append(ade_3)
+            avg_meter['fde_3'].append(fde_3)
+            avg_meter['ade_4'].append(ade_4)
+            avg_meter['fde_4'].append(fde_4)
+
             avg_meter['counter'] += (num_agents * batch_size)
+
+        t1 = time.time()
+        print('[INFO] Test Time: {:.2f}s'.format(t1 - t0))
     
     for k in scores:
+        if len(scores[k]) == 0:
+            continue
         scores[k] = torch.cat(scores[k], dim=2).cpu()
     xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
     data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
-    pickle.dump(data_dump, open('viz_scores_nba_{}.pkl'.format(args.tag), 'wb'))
+    pickle.dump(data_dump, open('viz_scores_nba_{}_{}.pkl'.format(args.tag, 'attr' if attribute_dataset else ''), 'wb'))
 
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
-    print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_1'] / avg_meter['counter'], avg_meter['fde_1'] / avg_meter['counter']))
-    print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_2'] / avg_meter['counter'], avg_meter['fde_2'] / avg_meter['counter']))
-    print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_3'] / avg_meter['counter'], avg_meter['fde_3'] / avg_meter['counter']))
-    print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']))
-    
-    return avg_meter['fde_4'] / avg_meter['counter'], avg_meter['ade_4'] / avg_meter['counter']
+    print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_1']) / avg_meter['counter'], np.sum(avg_meter['fde_1']) / avg_meter['counter']))
+    print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_2']) / avg_meter['counter'], np.sum(avg_meter['fde_2']) / avg_meter['counter']))
+    print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_3']) / avg_meter['counter'], np.sum(avg_meter['fde_3']) / avg_meter['counter']))
+    print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_4']) / avg_meter['counter'], np.sum(avg_meter['fde_4']) / avg_meter['counter']))
+
+    return avg_meter['ade_4'], avg_meter['fde_4']
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
-from .moe import kalman, cls_head, linearnet1e
+from .moe import kalman, cls_head, linearnet1e, nomoe
 
 def contrastive_three_modes_loss(features, scores, temp=0.1, base_temperature=0.07, positive_thresh=0.1, negative_thresh=2.0):
     device = (torch.device('cuda') if features.is_cuda
@@ -145,6 +145,17 @@ class MART(nn.Module):
                 'edge_hidden_dim_2': args.hidden_dim,
                 'dropout': args.dropout,
             }
+        elif nomoe:
+            module_args = {
+                'num_layers': 1,
+                'num_heads': args.num_heads,
+                'node_dim': args.model_dim,
+                'node_hidden_dim': args.hidden_dim,
+                'edge_dim': args.model_dim,
+                'edge_hidden_dim_1': args.hidden_dim,
+                'edge_hidden_dim_2': args.hidden_dim,
+                'dropout': args.dropout,
+            }
 
         if cls_head:
             self.cls_token = nn.Parameter(torch.zeros(1, 1, args.past_length, len(args.inputs)))
@@ -234,14 +245,15 @@ class MART(nn.Module):
         for i in range(self.args.num_layers):
             n_pair, e_pair, scores_pair, logits_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True, epoch=epoch)
             n_group, e_group, G, scores_group, logits_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True,epoch=epoch)
-            scores['pair_n'].append(scores_pair[0])
-            scores['pair_e'].append(scores_pair[1])
-            scores['group_n'].append(scores_group[0])
-            scores['group_e'].append(scores_group[1])
-            logits['pair_n'].append(logits_pair[0])
-            logits['pair_e'].append(logits_pair[1])
-            logits['group_n'].append(logits_group[0])
-            logits['group_e'].append(logits_group[1])
+            if scores_pair is not None:
+                scores['pair_n'].append(scores_pair[0])
+                scores['pair_e'].append(scores_pair[1])
+                scores['group_n'].append(scores_group[0])
+                scores['group_e'].append(scores_group[1])
+                logits['pair_n'].append(logits_pair[0])
+                logits['pair_e'].append(logits_pair[1])
+                logits['group_n'].append(logits_group[0])
+                logits['group_e'].append(logits_group[1])
 
             # import pdb; pdb.set_trace()
             # n_pair = self.pair_moes_node[i](n_pair, num_experts_per_tok=2)

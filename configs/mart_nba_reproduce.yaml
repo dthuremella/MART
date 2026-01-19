@@ -24,3 +24,4 @@ batch_size: 64
 scheduler_type: MultiStepLR
 milestones: [100, 200]
 decay_gamma: 0.5
+div_by: 1

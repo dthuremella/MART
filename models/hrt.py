@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .moe import MoELayer, smallest_final_layer, one_router_same_expert, linearnet1e
+from .moe import MoELayer, smallest_final_layer, one_router_same_expert, linearnet1e, nomoe
 
 
 def encode_onehot(labels):
@@ -252,8 +252,14 @@ class HRT(nn.Module):
             logits_e.append(logit[1])
         
         if return_edge:
-            return node_features, edge_features, G, (torch.stack(scores_n), torch.stack(scores_e)), (torch.stack(logits_n), torch.stack(logits_e))
-        
+            if scores_n[0] is not None:
+                scores = (torch.stack(scores_n), torch.stack(scores_e))
+                logits = (torch.stack(logits_n), torch.stack(logits_e))
+            else:
+                scores = None
+                logits = None
+            return node_features, edge_features, G, scores, logits
+
         return node_features, G
 
 
@@ -303,9 +309,13 @@ class HRTNoEdgeInit(nn.Module):
             logits_e.append(logit[1])
         
         if return_edge:
-            return node_features, edge_features, G, (torch.stack(scores_n), torch.stack(scores_e)), (torch.stack(logits_n), torch.stack(logits_e))
-            
-        return node_features, G
+            if scores_n[0] is not None:
+                scores = (torch.stack(scores_n), torch.stack(scores_e))
+                logits = (torch.stack(logits_n), torch.stack(logits_e))
+            else:
+                scores = None
+                logits = None
+            return node_features, edge_features, G, scores, logits
 
 
 class HRTTransformerLayer(nn.Module):
@@ -327,16 +337,19 @@ class HRTTransformerLayer(nn.Module):
         self.node_attention_layer = HRTAttentionLayer(num_heads, node_dim, edge_dim, aggregation)
             
         self.dropout = nn.Dropout(dropout)
-        self.linear_net_n = \
-            MoELayer(node_dim, 
-                node_hidden_dim, 
-                node_dim)
-            # nn.Sequential(
-            #     nn.Linear(node_dim, node_hidden_dim),
-            #     # nn.Dropout(dropout),
-            #     nn.ReLU(inplace=True),
-            #     nn.Linear(node_hidden_dim, node_dim),
-            # )
+        if nomoe:
+            self.linear_net_n = \
+                nn.Sequential(
+                    nn.Linear(node_dim, node_hidden_dim),
+                    # nn.Dropout(dropout),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(node_hidden_dim, node_dim),
+                )
+        else:
+            self.linear_net_n = \
+                MoELayer(node_dim, 
+                    node_hidden_dim, 
+                    node_dim)
         
         self.norm1_n = nn.LayerNorm(node_dim)
         self.norm2_n = nn.LayerNorm(node_dim)
@@ -347,6 +360,21 @@ class HRTTransformerLayer(nn.Module):
                     MoELayer(node_dim + edge_dim, 
                         edge_hidden_dim_1, 
                         edge_dim)
+                self.linear_net2_e = \
+                    nn.Sequential(
+                        nn.Linear(edge_dim, edge_hidden_dim_2),
+                        # nn.Dropout(dropout),
+                        nn.ReLU(inplace=True),
+                        nn.Linear(edge_hidden_dim_2, edge_dim),
+                    )
+            elif nomoe:
+                self.linear_net1_e = \
+                    nn.Sequential(
+                        nn.Linear(node_dim + edge_dim, edge_hidden_dim_1),
+                        # nn.Dropout(dropout),
+                        nn.ReLU(inplace=True),
+                        nn.Linear(edge_hidden_dim_1, edge_dim),
+                    )
                 self.linear_net2_e = \
                     nn.Sequential(
                         nn.Linear(edge_dim, edge_hidden_dim_2),
@@ -376,7 +404,11 @@ class HRTTransformerLayer(nn.Module):
         node_features = self.norm1_n(node_features)
         
         ########## Node MLP with MoE ##########
-        linear_out, scores_e, logits_e = self.linear_net_n(node_features, epoch=epoch, prev_gating_scores=prev_gating_scores)
+        if nomoe:
+            linear_out = self.linear_net_n(node_features)
+            (scores_n, scores_e), (logits_n, logits_e) = (None, None), (None, None)
+        else:
+            linear_out, scores_e, logits_e = self.linear_net_n(node_features, epoch=epoch, prev_gating_scores=prev_gating_scores)
         node_features = node_features + self.dropout(linear_out)
         node_features = self.norm2_n(node_features)
         
@@ -398,6 +430,16 @@ class HRTTransformerLayer(nn.Module):
                 edge_features = self.linear_net2_e(edge_features)
                 edge_features = edge_features + self.dropout(edge_features)
                 edge_features = self.norm2_e(edge_features)
+            elif nomoe:
+                ######### Edge MLP without MoE ##########
+                edge_features = self.linear_net1_e(concatenated_inputs)
+                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = self.norm1_e(edge_features)
+                
+                edge_features = self.linear_net2_e(edge_features)
+                edge_features = edge_features + self.dropout(edge_features)
+                edge_features = self.norm2_e(edge_features)
+                (scores_n, scores_e), (logits_n, logits_e) = (None, None), (None, None)
             else:
                 edge_features = self.linear_net1_e(concatenated_inputs)
                 edge_features = edge_features + self.dropout(edge_features)
