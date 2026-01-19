@@ -43,7 +43,7 @@ K = 2  # Number of experts to use per token for top-k gating
 
 NUM_EXPERTS = 8  # Total number of experts in the MoE layer
 
-test_calculate_all_expert_outputs = False # True for baseline and fastest method
+test_calculate_all_expert_outputs = True # True for baseline and fastest method
 
 
 def _gumbel_sigmoid(logits, tau=1, training=True):
@@ -231,6 +231,8 @@ class MoELayer(nn.Module):
                 eo_shape = expert_outputs.shape
                 expert_outputs = expert_outputs.reshape((eo_shape[0], eo_shape[1], 
                                             eo_shape[2]*eo_shape[3], eo_shape[4]))
+            expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
+            output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs) # [batch_size, num_tokens, output_dim]
 
         else:
             if len(x_shape) == 4:
@@ -246,30 +248,79 @@ class MoELayer(nn.Module):
                             expert_output = self.experts[expert_idx](x[example_idx, token_idx, :])
                             expert_outputs[example_idx, token_idx, expert_idx] = expert_output
                 expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
+                expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
+                output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs) # [batch_size, num_tokens, output_dim]
 
             else:
-                batch_size, num_tokens, _ = gating_scores.shape
-                # Initialize output (assuming experts output same dimension)
-                # Adjust output shape based on your expert's output
-                expert_outputs = torch.zeros(batch_size, NUM_EXPERTS, x.shape[1], x.shape[2], device=x.device)  # [batch_size, num_tokens, output_dim]
-                # Process each expert separately
-                for expert_idx in range(NUM_EXPERTS):
-                    # Find which batch elements go to this expert
-                    mask = (topk_indices == expert_idx)
-                    batch_indices = torch.where(mask)[0]
-                    
-                    if len(batch_indices) > 0:
-                        # Extract tokens for this expert
-                        expert_input = x[batch_indices]  # Shape: [num_tokens_for_expert, 12, 64]
-                        
-                        # Process through the expert
-                        expert_output = self.experts[expert_idx](expert_input)
-                        
-                        # Place results back in correct positions
-                        expert_outputs[batch_indices, expert_idx] = expert_output
+                B, T, D = x.shape
+                K = topk_indices.shape[-1]
+                
+                # 1. EXPAND: Treat every token-expert assignment as a separate "job"
+                # [B, T, D] -> [B*T*K, D]
+                x_expanded = x.view(B, 1, T,  D).expand(-1, K, -1, -1).flatten(0,1)
+                indices_flat = topk_indices.flatten()  # [B*T*K]
+                
+                # 2. GATHER: Sort tokens by Expert ID to group them for processing
+                # This replaces your 'for expert_idx in range(NUM_EXPERTS)' logic
+                sort_idx = torch.argsort(indices_flat)
+                gathered_input = x_expanded[sort_idx]
+                
+                # 3. COUNT: Determine how many tokens each expert gets
+                expert_counts = torch.bincount(indices_flat, minlength=NUM_EXPERTS)
+                
+                # 4. PROCESS: Execute Experts (Still a loop, but on contiguous memory slices)
+                # This is significantly faster than using boolean masks
+                gathered_outputs = torch.empty_like(gathered_input)
+                start = 0
+                for i in range(NUM_EXPERTS):
+                    count = expert_counts[i].item()
+                    if count > 0:
+                        end = start + count
+                        # Process the block of tokens assigned to Expert i
+                        gathered_outputs[start:end] = self.experts[i](gathered_input[start:end])
+                        start = end
 
-        expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
-        output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs) # [batch_size, num_tokens, output_dim]
+                # 5. SCATTER: Move expert results back to their original sequence order
+                # Initializing to [B*T*K, D]
+                unsorted_outputs = torch.empty_like(gathered_outputs)
+                unsorted_outputs[sort_idx] = gathered_outputs
+                
+                # 6. REDUCE: Weighted sum using gating scores
+                # Reshape back to [B, T, K, D]
+                expert_outputs = unsorted_outputs.view(B, T, K, D)
+
+                # 1. Gather the scores for the experts we actually used
+                # gating_scores: [B, T, 8] -> [B, T, 2]
+                topk_gating_scores = torch.gather(gating_scores, dim=-1, index=topk_indices)
+
+                # 2. Reshape to [B, T, 2, 1] for broadcasting with [B, T, 2, D]
+                topk_gating_scores = topk_gating_scores.unsqueeze(-1)
+                
+                # This replaces your einsum: [B, T, K] * [B, T, K, D] -> [B, T, D]
+                output = (topk_gating_scores * expert_outputs).sum(dim=2)
+
+                # batch_size, num_tokens, _ = gating_scores.shape
+                # # Initialize output (assuming experts output same dimension)
+                # # Adjust output shape based on your expert's output
+                # expert_outputs = torch.zeros(batch_size, NUM_EXPERTS, x.shape[1], x.shape[2], device=x.device)  # [batch_size, num_tokens, output_dim]
+                # # Process each expert separately
+                # for expert_idx in range(NUM_EXPERTS):
+                #     # Find which batch elements go to this expert
+                #     mask = (topk_indices == expert_idx)
+                #     batch_indices = torch.where(mask)[0]
+                    
+                #     if len(batch_indices) > 0:
+                #         # Extract tokens for this expert
+                #         expert_input = x[batch_indices]  # Shape: [num_tokens_for_expert, 12, 64]
+                        
+                #         # Process through the expert
+                #         expert_output = self.experts[expert_idx](expert_input)
+                        
+                #         # Place results back in correct positions
+                #         expert_outputs[batch_indices, expert_idx] = expert_output
+
+                # expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
+                # output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs) # [batch_size, num_tokens, output_dim]
 
         if len(x_shape) == 4:
             o_shape = output.shape

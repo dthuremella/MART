@@ -20,7 +20,7 @@ from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman
 load_balance_layer_only = None #3 # set to None to do all layers
 
 load_balance = False
-biased_loadbalance = True # bring average of chosen index down
+biased_loadbalance = False # bring average of chosen index down
 
 load_balance_loss_only = False
 router_z_loss = False 
@@ -333,7 +333,7 @@ def test(epoch, model, loader):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred, score, logit, contrastive_loss = model(x_abs, x_rel)
+            y_pred, score = model(x_abs, x_rel)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
