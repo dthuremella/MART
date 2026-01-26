@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .moe import MoELayer, smallest_final_layer, one_router_same_expert, linearnet1e, nomoe
+from .moe import MoELayer, smallest_final_layer, one_router_same_expert, linearnet1e, nomoe, no_pair_e
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -280,7 +280,7 @@ class RTTransformerLayer(nn.Module):
                         nn.ReLU(inplace=True),
                         nn.Linear(edge_hidden_dim_2, edge_dim),
                     )
-            elif nomoe:
+            elif nomoe or no_pair_e:
                 self.linear_net1_e = \
                     nn.Sequential(
                         nn.Linear(node_dim * 2 + edge_dim * 2, edge_hidden_dim_1),
@@ -347,7 +347,7 @@ class RTTransformerLayer(nn.Module):
                 
                 edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
                 edge_features = self.norm2_e(edge_features)
-            elif nomoe:
+            elif nomoe or no_pair_e:
                 edge_features = edge_features + self.dropout(self.linear_net1_e(concatenated_inputs))
                 edge_features = self.norm1_e(edge_features)
                 

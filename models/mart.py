@@ -30,7 +30,7 @@ def contrastive_three_modes_loss(features, scores, temp=0.1, base_temperature=0.
 
     loss = - (temp / base_temperature) * mean_log_prob_pos
     loss = loss.view(1, batch_size).mean()
-    return loss, mask_positives.sum(1).mean(), mask_negatives.sum(1).mean()
+    return loss #, mask_positives.sum(1).mean(), mask_negatives.sum(1).mean()
 
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims=(1024, 512), activation='relu'):
@@ -225,18 +225,27 @@ class MART(nn.Module):
         contrastive_loss = None
         if kalman and self.training:
             if x_abs.shape[-1] == 3: #if it has a mask
-                valid_embeddings = n_initial[torch.where(x_abs[:,:,-1,-1] == 1)] # where mask (last layer of 4th dim) is valid
-                kalman_scores = kalman_errors[torch.where(x_abs[:,:,-1,-1] == 1)]
+                if cls_head:
+                    valid_embeddings = n_initial[:,0,:]
+                    import pdb; pdb.set_trace() # check if this is correct
+                    kalman_scores = kalman_errors[torch.where(x_abs[:,:,-1,-1] == 1)].mean(dim=1)  # average across group
+                else:
+                    valid_embeddings = n_initial[torch.where(x_abs[:,:,-1,-1] == 1)] # where mask (last layer of 4th dim) is valid
+                    kalman_scores = kalman_errors[torch.where(x_abs[:,:,-1,-1] == 1)]
             else: # nba dataset needs no mask
-                valid_embeddings = n_initial.flatten(0,1)  # (B*N, D)
-                kalman_scores = kalman_errors.flatten(0,1)
+                if cls_head:
+                    valid_embeddings = n_initial[:,0,:]  # use cls token
+                    kalman_scores = kalman_errors.mean(dim=1)  # average across group
+                else:
+                    valid_embeddings = n_initial.flatten(0,1)  # (B*N, D)
+                    kalman_scores = kalman_errors.flatten(0,1)
             if hasattr(self.args, 'positive_thresh') and hasattr(self.args, 'negative_thresh'):
                 positive_thresh = self.args.positive_thresh
                 negative_thresh = self.args.negative_thresh
             else:
                 positive_thresh = 0.1
                 negative_thresh = 2.0
-            contrastive_loss, _, _ = contrastive_three_modes_loss(valid_embeddings, kalman_scores, temp=0.5, 
+            contrastive_loss = contrastive_three_modes_loss(valid_embeddings, kalman_scores, temp=0.5, 
                                             positive_thresh=positive_thresh, negative_thresh=negative_thresh)
         
         n_pair, e_pair = n_initial, None
@@ -255,6 +264,17 @@ class MART(nn.Module):
                 logits['pair_e'].append(logits_pair[1])
                 logits['group_n'].append(logits_group[0])
                 logits['group_e'].append(logits_group[1])
+            # contrastive moe 
+            if kalman and self.training:
+                for emb in [n_pair, n_group, e_group]: #e_pair has a weird shape
+                    if cls_head: valid_embeddings = emb[:,0,:]
+                    else:
+                        if x_abs.shape[-1] == 3: #if it has a mask
+                            valid_embeddings = emb[torch.where(x_abs[:,:,-1,-1] == 1)] # where mask (last layer of 4th dim) is valid
+                        else: # nba dataset needs no mask
+                            valid_embeddings = emb.flatten(0,1)  # (B*N, D)
+                    contrastive_loss += contrastive_three_modes_loss(valid_embeddings, kalman_scores, temp=0.5, 
+                                                positive_thresh=positive_thresh, negative_thresh=negative_thresh)
 
             # import pdb; pdb.set_trace()
             # n_pair = self.pair_moes_node[i](n_pair, num_experts_per_tok=2)
@@ -263,6 +283,9 @@ class MART(nn.Module):
             # e_group = self.hyper_moes_edge[i](e_group, num_experts_per_tok=2)
         
         n_final = torch.cat([n_initial, n_pair, n_group], dim=-1)
+        # rescale contrastive loss
+        if kalman and self.training:
+            contrastive_loss = contrastive_loss / (4 * self.args.num_layers + 1)
         
         out_list = []
         for i in range(self.args.sample_k):

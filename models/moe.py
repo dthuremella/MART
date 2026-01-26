@@ -23,6 +23,7 @@ two_layer_router = False
 one_router_same_expert = False
 
 linearnet1e = False
+no_pair_e = False
 
 kalman = False
 
@@ -43,7 +44,7 @@ K = 2  # Number of experts to use per token for top-k gating
 
 NUM_EXPERTS = 8  # Total number of experts in the MoE layer
 
-test_calculate_all_expert_outputs = True # True for baseline and fastest method
+test_calculate_all_expert_outputs = False
 
 
 def _gumbel_sigmoid(logits, tau=1, training=True):
@@ -252,75 +253,54 @@ class MoELayer(nn.Module):
                 output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs) # [batch_size, num_tokens, output_dim]
 
             else:
-                B, T, D = x.shape
-                K = topk_indices.shape[-1]
-                
-                # 1. EXPAND: Treat every token-expert assignment as a separate "job"
-                # [B, T, D] -> [B*T*K, D]
-                x_expanded = x.view(B, 1, T,  D).expand(-1, K, -1, -1).flatten(0,1)
-                indices_flat = topk_indices.flatten()  # [B*T*K]
-                
-                # 2. GATHER: Sort tokens by Expert ID to group them for processing
-                # This replaces your 'for expert_idx in range(NUM_EXPERTS)' logic
-                sort_idx = torch.argsort(indices_flat)
-                gathered_input = x_expanded[sort_idx]
-                
-                # 3. COUNT: Determine how many tokens each expert gets
-                expert_counts = torch.bincount(indices_flat, minlength=NUM_EXPERTS)
-                
-                # 4. PROCESS: Execute Experts (Still a loop, but on contiguous memory slices)
-                # This is significantly faster than using boolean masks
-                gathered_outputs = torch.empty_like(gathered_input)
-                start = 0
-                for i in range(NUM_EXPERTS):
-                    count = expert_counts[i].item()
-                    if count > 0:
-                        end = start + count
-                        # Process the block of tokens assigned to Expert i
-                        gathered_outputs[start:end] = self.experts[i](gathered_input[start:end])
-                        start = end
+                # B, T, D = x.shape
+                # K = topk_indices.shape[-1]
 
-                # 5. SCATTER: Move expert results back to their original sequence order
-                # Initializing to [B*T*K, D]
-                unsorted_outputs = torch.empty_like(gathered_outputs)
-                unsorted_outputs[sort_idx] = gathered_outputs
+                # # 1. THE TRICK: Stack all 8 expert weights into one "Mega-Expert"
+                # # expert_weights: [8, D, D]
+                # # Do this once or use a cached version to avoid overhead
+                # weights = torch.stack([e.weight for e in self.experts], dim=0) 
                 
-                # 6. REDUCE: Weighted sum using gating scores
-                # Reshape back to [B, T, K, D]
-                expert_outputs = unsorted_outputs.view(B, T, K, D)
+                # # 2. Parallel Projection: Run ALL tokens through ALL experts
+                # # [512, 12, D] -> [8, 512, 12, D]
+                # # This is incredibly fast because it's one single dense MatMul
+                # # We use einsum to do: (Expert_Weights) @ (Input_Tokens)
+                # # 'edD, btd -> ebtd' (e=expert, d=in_dim, D=out_dim, b=batch, t=tokens)
+                # # Flatten outputs for gathering: [8, 512, 12*D]
+                # flat_outputs = torch.einsum('edD, btd -> ebtd', weights, x).view(NUM_EXPERTS, B, T * D)
 
-                # 1. Gather the scores for the experts we actually used
-                # gating_scores: [B, T, 8] -> [B, T, 2]
-                topk_gating_scores = torch.gather(gating_scores, dim=-1, index=topk_indices)
+                # # 3. FAST GATHER: Pull only the Top-K results we need
+                # # We need to pick K experts for each batch element
+                # # topk_indices is [512, 1, 2] -> reshape to [1, 512, 2, 1] for gathering
+                # # We want to select along the 'e' (expert) dimension
+                # # Gather the 2 chosen experts for each batch: [K, 512, T*D]
+                # chosen_outputs = torch.gather(flat_outputs, 0, topk_indices.view(1, B, K, 1).expand(-1, -1, -1, T * D))
+                                
+                # # 4. FAST REDUCE: Apply gating scores
+                # # topk_gating: [512, 1, K] -> [K, 512, 1, 1]
+                # # Result: [K, 512, T, D] * [K, 512, 1, 1] -> Sum over K
+                # output = (chosen_outputs.view(K, B, T, D) * torch.gather(gating_scores, -1, topk_indices).permute(2, 0, 1).unsqueeze(-1)).sum(dim=0)
 
-                # 2. Reshape to [B, T, 2, 1] for broadcasting with [B, T, 2, D]
-                topk_gating_scores = topk_gating_scores.unsqueeze(-1)
-                
-                # This replaces your einsum: [B, T, K] * [B, T, K, D] -> [B, T, D]
-                output = (topk_gating_scores * expert_outputs).sum(dim=2)
+                batch_size, num_tokens, _ = gating_scores.shape
+                # Initialize output (assuming experts output same dimension)
+                # Adjust output shape based on your expert's output
+                expert_outputs = torch.zeros(batch_size, NUM_EXPERTS, x.shape[1], x.shape[2], device=x.device)  # [batch_size, num_tokens, output_dim]
+                # Process each expert separately
+                for expert_idx in range(NUM_EXPERTS):
+                    # Find which batch elements go to this expert
+                    batch_indices = torch.where((topk_indices == expert_idx))[0]
 
-                # batch_size, num_tokens, _ = gating_scores.shape
-                # # Initialize output (assuming experts output same dimension)
-                # # Adjust output shape based on your expert's output
-                # expert_outputs = torch.zeros(batch_size, NUM_EXPERTS, x.shape[1], x.shape[2], device=x.device)  # [batch_size, num_tokens, output_dim]
-                # # Process each expert separately
-                # for expert_idx in range(NUM_EXPERTS):
-                #     # Find which batch elements go to this expert
-                #     mask = (topk_indices == expert_idx)
-                #     batch_indices = torch.where(mask)[0]
+                    ### Debug: Only process certain experts
+                    # if expert_idx == 0 or expert_idx == 7:
+                    #     batch_indices = torch.tensor([i for i in range(batch_size)]).view(-1)
+                    # else:
+                    #     continue
                     
-                #     if len(batch_indices) > 0:
-                #         # Extract tokens for this expert
-                #         expert_input = x[batch_indices]  # Shape: [num_tokens_for_expert, 12, 64]
-                        
-                #         # Process through the expert
-                #         expert_output = self.experts[expert_idx](expert_input)
-                        
-                #         # Place results back in correct positions
-                #         expert_outputs[batch_indices, expert_idx] = expert_output
+                    if len(batch_indices) > 0:
+                        # Process through the expert
+                        expert_outputs[batch_indices, expert_idx] = self.experts[expert_idx](x[batch_indices])
 
-                # expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
-                # output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs) # [batch_size, num_tokens, output_dim]
+                output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs.transpose(1, 2)) # [batch_size, num_tokens, output_dim]
 
         if len(x_shape) == 4:
             o_shape = output.shape
@@ -472,4 +452,4 @@ def kalman_filter(history, prediction_horizon):
 def kalman_score(data, obs_len, pred_len):
     kalman_preds = kalman_filter(data[:, :obs_len, :], pred_len)
     error = torch.norm(kalman_preds - data[:, obs_len:obs_len+pred_len, :], dim=-1)  # (N, C)
-    return error.mean(dim=1)  # (N,) # ADE (could also do FDE by taking error[:, -1])
+    return error.mean(dim=1), error[:, -1]  # (N,) # ADE (could also do FDE by taking error[:, -1])

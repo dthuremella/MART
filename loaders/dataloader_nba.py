@@ -56,8 +56,8 @@ class NBADataset(Dataset):
 
         kalman_error = None
         if kalman:
-            kalman_error = kalman_score(self.traj_abs[index], self.obs_len, self.pred_len)
-            out = [past_traj, future_traj, kalman_error]
+            kalman_error_ade, kalman_error_fde = kalman_score(self.traj_abs[index], self.obs_len, self.pred_len)
+            out = [past_traj, future_traj, kalman_error_fde]
         else:
             out = [past_traj, future_traj]
         

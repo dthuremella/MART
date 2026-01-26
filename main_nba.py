@@ -13,12 +13,13 @@ from torch.optim import lr_scheduler
 from utils import *
 from models.mart import MART
 from loaders.dataloader_nba import NBADataset, attribute_dataset
-from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman, nomoe
+from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman, nomoe, kalman_score
 
 load_balance = False
 biased_loadbalance = False # bring average of chosen index down
 load_balance_layer_only = None #3 # set to None to do all layers
 fast = True
+longtail = False
 
 import pickle
 
@@ -39,7 +40,7 @@ def main():
     loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, shuffle=False, num_workers=8)
 
     model = MART(opts).cuda()
-    print(model)
+    # print(model)
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
 
     optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=1e-12)
@@ -57,6 +58,7 @@ def main():
         model_path = os.path.join(model_save_dir, model_name)
         print('[INFO] Loading model from:', model_path)
         model_ckpt = torch.load(model_path)
+        # not Debug
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
         if nomoe:
             fde, ade = test_nomoe(model_ckpt['epoch'], model, loader_test)
@@ -178,7 +180,8 @@ def train(epoch, model, optimizer, loader, lb_log=None):
         total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
         total_loss = total_loss + lb_loss
         if kalman and contrastive_loss is not None:
-            total_loss = total_loss + contrastive_loss
+            scale = 1
+            total_loss = total_loss + scale * contrastive_loss
         
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
@@ -235,7 +238,8 @@ def train(epoch, model, optimizer, loader, lb_log=None):
 
 def test(epoch, model, loader):
     model.eval()
-    avg_meter = {'epoch': epoch, 'ade_1': [], 'ade_2': [], 'ade_3': [], 'ade_4': [], 'fde_1': [], 'fde_2': [], 'fde_3': [], 'fde_4': [], 'counter': 0}
+    avg_meter_list = {'ade_4': [], 'fde_4': [], 'kalman_fde_4': []}
+    avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
 
     with torch.no_grad():
         scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
@@ -274,6 +278,12 @@ def test(epoch, model, loader):
             y = np.array(y.cpu()) # B, N, T, 2
             y = y[:, :, None, :, :]
             
+            if longtail:
+                avg_meter_list['ade_4'].append(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2).flatten())
+                avg_meter_list['fde_4'].append(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2).flatten())
+                if kalman:
+                    avg_meter_list['kalman_fde_4'].append(kal.numpy().flatten())
+
             ade_1 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :5] - y[:, :, :, :5], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             fde_1 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 4:5] - y[:, :, :, 4:5], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             ade_2 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :10] - y[:, :, :, :10], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
@@ -282,15 +292,15 @@ def test(epoch, model, loader):
             fde_3 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 14:15] - y[:, :, :, 14:15], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             ade_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             fde_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
-
-            avg_meter['ade_1'].append(ade_1)
-            avg_meter['fde_1'].append(fde_1)
-            avg_meter['ade_2'].append(ade_2)
-            avg_meter['fde_2'].append(fde_2)
-            avg_meter['ade_3'].append(ade_3)
-            avg_meter['fde_3'].append(fde_3)
-            avg_meter['ade_4'].append(ade_4)
-            avg_meter['fde_4'].append(fde_4)
+            
+            avg_meter['ade_1'] += ade_1
+            avg_meter['fde_1'] += fde_1
+            avg_meter['ade_2'] += ade_2
+            avg_meter['fde_2'] += fde_2
+            avg_meter['ade_3'] += ade_3
+            avg_meter['fde_3'] += fde_3
+            avg_meter['ade_4'] += ade_4
+            avg_meter['fde_4'] += fde_4
 
             avg_meter['counter'] += (num_agents * batch_size)
 
@@ -307,17 +317,36 @@ def test(epoch, model, loader):
 
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
-    print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_1']) / avg_meter['counter'], np.sum(avg_meter['fde_1']) / avg_meter['counter']))
-    print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_2']) / avg_meter['counter'], np.sum(avg_meter['fde_2']) / avg_meter['counter']))
-    print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_3']) / avg_meter['counter'], np.sum(avg_meter['fde_3']) / avg_meter['counter']))
-    print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_4']) / avg_meter['counter'], np.sum(avg_meter['fde_4']) / avg_meter['counter']))
+    print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_1'] / avg_meter['counter'], avg_meter['fde_1'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_2'] / avg_meter['counter'], avg_meter['fde_2'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_3'] / avg_meter['counter'], avg_meter['fde_3'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']))
 
-    return avg_meter['ade_4'], avg_meter['fde_4']
+    if longtail:
+        for k in avg_meter_list:
+            avg_meter_list[k] = np.concatenate(avg_meter_list[k], axis=0)
+        avg_meter_list_baseline = pickle.load(open('results/nomoe_nba_baseline.pkl', 'rb'))
+        # argsort the baseline errors
+        baseline_fde_sorted_indices = np.argsort(avg_meter_list_baseline['fde_4'])
+        if kalman: kalman_fde_sorted_indices = np.argsort(avg_meter_list['kalman_fde_4'])
+        for lt_metric in [1,2,5,10]:
+            # take the top lt_metric% hardest samples
+            num_hardest_samples = int(len(baseline_fde_sorted_indices) * lt_metric / 100)
+            hardest_samples_indices = baseline_fde_sorted_indices[-num_hardest_samples:]
+            print('[{}] Hardest {}% samples (FDE): {}'.format(loader.dataset.mode.upper(), lt_metric, 
+                    np.mean(avg_meter_list['fde_4'][hardest_samples_indices])))
+            if kalman:
+                num_hardest_samples_kalman = int(len(kalman_fde_sorted_indices) * lt_metric / 100)
+                hardest_samples_indices_kalman = kalman_fde_sorted_indices[-num_hardest_samples_kalman:]
+                print('[{}] Hardest {}% samples (Kalman FDE): {}'.format(loader.dataset.mode.upper(), lt_metric,
+                    np.mean(avg_meter_list['fde_4'][hardest_samples_indices_kalman])))   
+
+    return avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']
 
 
 def test_fast(epoch, model, loader):
     model.eval()
-    avg_meter = {'epoch': epoch, 'ade_1': [], 'ade_2': [], 'ade_3': [], 'ade_4': [], 'fde_1': [], 'fde_2': [], 'fde_3': [], 'fde_4': [], 'counter': 0}
+    avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
 
     with torch.no_grad():
         scores = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
@@ -352,37 +381,41 @@ def test_fast(epoch, model, loader):
             ade_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             fde_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
 
-            avg_meter['ade_1'].append(ade_1)
-            avg_meter['fde_1'].append(fde_1)
-            avg_meter['ade_2'].append(ade_2)
-            avg_meter['fde_2'].append(fde_2)
-            avg_meter['ade_3'].append(ade_3)
-            avg_meter['fde_3'].append(fde_3)
-            avg_meter['ade_4'].append(ade_4)
-            avg_meter['fde_4'].append(fde_4)
+            avg_meter['ade_1'] += ade_1
+            avg_meter['fde_1'] += fde_1
+            avg_meter['ade_2'] += ade_2
+            avg_meter['fde_2'] += fde_2
+            avg_meter['ade_3'] += ade_3
+            avg_meter['fde_3'] += fde_3
+            avg_meter['ade_4'] += ade_4
+            avg_meter['fde_4'] += fde_4
 
+            
             avg_meter['counter'] += (num_agents * batch_size)
-
         t1 = time.time()
         print('[INFO] Test Time: {:.2f}s'.format(t1 - t0))
     
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
-    print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_1']) / avg_meter['counter'], np.sum(avg_meter['fde_1']) / avg_meter['counter']))
-    print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_2']) / avg_meter['counter'], np.sum(avg_meter['fde_2']) / avg_meter['counter']))
-    print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_3']) / avg_meter['counter'], np.sum(avg_meter['fde_3']) / avg_meter['counter']))
-    print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), np.sum(avg_meter['ade_4']) / avg_meter['counter'], np.sum(avg_meter['fde_4']) / avg_meter['counter']))
-
-    return avg_meter['ade_4'], avg_meter['fde_4']
+    print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_1'] / avg_meter['counter'], avg_meter['fde_1'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_2'] / avg_meter['counter'], avg_meter['fde_2'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_3'] / avg_meter['counter'], avg_meter['fde_3'] / avg_meter['counter']))
+    print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']))
+    
+    return avg_meter['fde_4'] / avg_meter['counter'], avg_meter['ade_4'] / avg_meter['counter']
 
 def test_nomoe(epoch, model, loader):
     model.eval()
+    avg_meter_list = {'ade_4': [], 'fde_4': [], 'kalman_fde_4': []}
     avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
-    
+
     with torch.no_grad():
         t0 = time.time()
         for _, data in enumerate(loader):
-            x_abs, y = data
+            if kalman:
+                x_abs, y, kal = data
+            else:
+                x_abs, y = data
             x_abs, y = x_abs.cuda(), y.cuda()        
             
             batch_size, num_agents, length, _ = x_abs.size()
@@ -400,7 +433,13 @@ def test_nomoe(epoch, model, loader):
             y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
             y = np.array(y.cpu()) # B, N, T, 2
             y = y[:, :, None, :, :]
-            
+
+            if longtail:
+                avg_meter_list['ade_4'].append(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2).flatten())
+                avg_meter_list['fde_4'].append(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2).flatten())
+                if kalman:
+                    avg_meter_list['kalman_fde_4'].append(kal.numpy().flatten())
+
             ade_1 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :5] - y[:, :, :, :5], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             fde_1 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 4:5] - y[:, :, :, 4:5], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             ade_2 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, :10] - y[:, :, :, :10], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
@@ -409,7 +448,7 @@ def test_nomoe(epoch, model, loader):
             fde_3 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, 14:15] - y[:, :, :, 14:15], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             ade_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
             fde_4 = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
-                        
+            
             avg_meter['ade_1'] += ade_1
             avg_meter['fde_1'] += fde_1
             avg_meter['ade_2'] += ade_2
@@ -418,7 +457,7 @@ def test_nomoe(epoch, model, loader):
             avg_meter['fde_3'] += fde_3
             avg_meter['ade_4'] += ade_4
             avg_meter['fde_4'] += fde_4
-            
+
             avg_meter['counter'] += (num_agents * batch_size)
         t1 = time.time()
         print('[INFO] Test Time: {:.2f}s'.format(t1 - t0))
@@ -429,9 +468,28 @@ def test_nomoe(epoch, model, loader):
     print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_2'] / avg_meter['counter'], avg_meter['fde_2'] / avg_meter['counter']))
     print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_3'] / avg_meter['counter'], avg_meter['fde_3'] / avg_meter['counter']))
     print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']))
-    
-    return avg_meter['fde_4'] / avg_meter['counter'], avg_meter['ade_4'] / avg_meter['counter']
 
+    if longtail:
+        for k in avg_meter_list:
+            avg_meter_list[k] = np.concatenate(avg_meter_list[k], axis=0)
+        pickle.dump(avg_meter_list, open('results/nomoe_nba_baseline.pkl', 'wb'))
+        avg_meter_list_baseline = pickle.load(open('results/nomoe_nba_baseline.pkl', 'rb'))
+        # argsort the baseline errors
+        baseline_fde_sorted_indices = np.argsort(avg_meter_list_baseline['fde_4'])
+        if kalman: kalman_fde_sorted_indices = np.argsort(avg_meter_list['kalman_fde_4'])
+        for lt_metric in [1,2,5,10]:
+            # take the top lt_metric% hardest samples
+            num_hardest_samples = int(len(baseline_fde_sorted_indices) * lt_metric / 100)
+            hardest_samples_indices = baseline_fde_sorted_indices[-num_hardest_samples:]
+            print('[{}] Hardest {}% samples (FDE): {}'.format(loader.dataset.mode.upper(), lt_metric, 
+                    np.mean(avg_meter_list['fde_4'][hardest_samples_indices])))
+            if kalman:
+                num_hardest_samples_kalman = int(len(kalman_fde_sorted_indices) * lt_metric / 100)
+                hardest_samples_indices_kalman = kalman_fde_sorted_indices[-num_hardest_samples_kalman:]
+                print('[{}] Hardest {}% samples (Kalman FDE): {}'.format(loader.dataset.mode.upper(), lt_metric,
+                    np.mean(avg_meter_list['fde_4'][hardest_samples_indices_kalman])))   
+
+    return avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MART for Trajectory Prediction')

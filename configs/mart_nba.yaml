@@ -22,7 +22,7 @@ pred_rel: False
 num_epochs: 100
 lr: 0.0005
 clip_grad: null
-batch_size: 256
+batch_size: 512
 scheduler_type: MultiStepLR
 milestones: [100, 200]
 decay_gamma: 0.5
