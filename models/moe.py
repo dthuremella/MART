@@ -15,11 +15,11 @@ import math
 import numpy as np
 
 nomoe = False
+token_wise_routing_for_first_two_layers = True
 
 cls_head = True
 
 two_layer_router = False
-
 one_router_same_expert = False
 
 linearnet1e = False
@@ -168,7 +168,7 @@ class GatingNetwork(nn.Module):
 
 # Define the Mixture of Experts Layer class
 class MoELayer(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_experts=NUM_EXPERTS):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_experts=NUM_EXPERTS, token_wise_routing=False):
         super(MoELayer, self).__init__()
         if no_op is not None:
             self.experts = []
@@ -187,6 +187,7 @@ class MoELayer(nn.Module):
                 self.expert_biases = nn.Parameter(torch.zeros(num_experts))
             else:
                 self.expert_biases = nn.Parameter(torch.tensor(biased_deepseek, dtype=torch.float, device='cuda'))
+        self.token_wise_routing = token_wise_routing
 
 
     def forward(self, x, num_experts_per_tok=K, epoch=None, prev_gating_scores=None):
@@ -196,7 +197,7 @@ class MoELayer(nn.Module):
             gating_scores = prev_gating_scores
             logits = None
         else:
-            if cls_head:
+            if cls_head and not self.token_wise_routing:
                 # use only cls token for gating
                 if len(x_shape) == 4: gating_input = x[:,:1, :1]
                 else: gating_input = x[:,:1]
@@ -248,7 +249,6 @@ class MoELayer(nn.Module):
                             expert_idx = expert_idx.item()
                             expert_output = self.experts[expert_idx](x[example_idx, token_idx, :])
                             expert_outputs[example_idx, token_idx, expert_idx] = expert_output
-                expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
                 expert_outputs = expert_outputs.transpose(1, 2) # [batch_size, num_tokens, num_experts, output_dim]
                 output = torch.einsum('bte,bteo->bto', gating_scores, expert_outputs) # [batch_size, num_tokens, output_dim]
 

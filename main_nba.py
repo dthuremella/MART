@@ -14,6 +14,7 @@ from utils import *
 from models.mart import MART
 from loaders.dataloader_nba import NBADataset, attribute_dataset
 from models.moe import deepseek_lb, K, NUM_EXPERTS, kalman, nomoe, kalman_score
+from models.moe import token_wise_routing_for_first_two_layers
 
 load_balance = False
 biased_loadbalance = False # bring average of chosen index down
@@ -268,7 +269,7 @@ def test(epoch, model, loader):
                 if score[k] is None:
                     continue
                 if len(score[k]) > 0:
-                    score[k] = torch.stack(score[k])
+                    if not token_wise_routing_for_first_two_layers: score[k] = torch.stack(score[k])
                     scores[k].append(score[k])
             xs.append(x_abs)
             ys.append(y)
@@ -308,7 +309,7 @@ def test(epoch, model, loader):
         print('[INFO] Test Time: {:.2f}s'.format(t1 - t0))
     
     for k in scores:
-        if len(scores[k]) == 0:
+        if len(scores[k]) == 0 or token_wise_routing_for_first_two_layers:
             continue
         scores[k] = torch.cat(scores[k], dim=2).cpu()
     xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()

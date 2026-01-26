@@ -147,7 +147,8 @@ class HRT(nn.Module):
             dropout: float = 0.0,
             aggregation: str = 'avg',
             scale: int = 2,
-            function_type: int = 1
+            function_type: int = 1,
+            token_wise_routing: bool = False
     ):
         super(HRT, self).__init__()
         self.scale = scale
@@ -162,7 +163,8 @@ class HRT(nn.Module):
                     edge_hidden_dim_1,
                     int(edge_hidden_dim_2 / (2 ** i)),
                     dropout,
-                    aggregation
+                    aggregation,
+                    token_wise_routing=token_wise_routing
                 ))
             self.layers = nn.ModuleList(self.layers)        
         else:
@@ -174,7 +176,8 @@ class HRT(nn.Module):
                 edge_hidden_dim_1,
                 edge_hidden_dim_2,
                 dropout,
-                aggregation
+                aggregation,
+                token_wise_routing=token_wise_routing
             )
             self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
         print('[INFO] HRT Agg: {}'.format(aggregation))
@@ -276,7 +279,8 @@ class HRTNoEdgeInit(nn.Module):
             dropout: float = 0.0,
             aggregation: str = 'avg',
             scale: int = 2,
-            function_type: int = 1
+            function_type: int = 1,
+            token_wise_routing: bool = False
     ):
         super(HRTNoEdgeInit, self).__init__()
         layer = HRTTransformerLayer(
@@ -287,7 +291,8 @@ class HRTNoEdgeInit(nn.Module):
             edge_hidden_dim_1,
             edge_hidden_dim_2,
             dropout,
-            aggregation
+            aggregation,
+            token_wise_routing=token_wise_routing
         )
         
         self.aggregation = aggregation # add or att
@@ -328,7 +333,8 @@ class HRTTransformerLayer(nn.Module):
         edge_hidden_dim_1: int = 128,
         edge_hidden_dim_2: int = 128,
         dropout: float = 0.0,
-        aggregation: str = 'avg'
+        aggregation: str = 'avg',
+        token_wise_routing: bool = False
     ):
         super(HRTTransformerLayer, self).__init__()
         self.aggregation = aggregation
@@ -349,7 +355,8 @@ class HRTTransformerLayer(nn.Module):
             self.linear_net_n = \
                 MoELayer(node_dim, 
                     node_hidden_dim, 
-                    node_dim)
+                    node_dim,
+                    token_wise_routing=token_wise_routing)
         
         self.norm1_n = nn.LayerNorm(node_dim)
         self.norm2_n = nn.LayerNorm(node_dim)
@@ -359,7 +366,8 @@ class HRTTransformerLayer(nn.Module):
                 self.linear_net1_e = \
                     MoELayer(node_dim + edge_dim, 
                         edge_hidden_dim_1, 
-                        edge_dim)
+                        edge_dim,
+                        token_wise_routing=token_wise_routing)
                 self.linear_net2_e = \
                     nn.Sequential(
                         nn.Linear(edge_dim, edge_hidden_dim_2),
@@ -393,7 +401,8 @@ class HRTTransformerLayer(nn.Module):
                 self.linear_net2_e = \
                     MoELayer(edge_dim, 
                         edge_hidden_dim_2, 
-                        edge_dim)
+                        edge_dim,
+                        token_wise_routing=token_wise_routing)
 
             self.norm1_e = nn.LayerNorm(edge_dim)
             self.norm2_e = nn.LayerNorm(edge_dim)

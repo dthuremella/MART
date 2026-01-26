@@ -6,7 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .moe import MoELayer, smallest_final_layer, one_router_same_expert, linearnet1e, nomoe, no_pair_e
+from .moe import MoELayer, smallest_final_layer, one_router_same_expert
+from .moe import linearnet1e, nomoe, no_pair_e
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -64,6 +65,7 @@ class RT(nn.Module):
             edge_hidden_dim_1: int = 128,
             edge_hidden_dim_2: int = 128,
             dropout: float = 0.0,
+            token_wise_routing: bool = False,
     ):
         super(RT, self).__init__()
         if smallest_final_layer:
@@ -77,6 +79,7 @@ class RT(nn.Module):
                     edge_hidden_dim_1,
                     int(edge_hidden_dim_2 / (2**i)),
                     dropout,
+                    token_wise_routing=token_wise_routing,
                 ))
             self.layers = nn.ModuleList(self.layers)
         else:
@@ -88,6 +91,7 @@ class RT(nn.Module):
                 edge_hidden_dim_1,
                 edge_hidden_dim_2,
                 dropout,
+                token_wise_routing=token_wise_routing,
             )
             self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
         # self.aggregation = aggregation # 'cat', 'avg', 'sum', 'att'
@@ -193,6 +197,7 @@ class RTNoEdgeInit(nn.Module):
             edge_hidden_dim_1: int = 128,
             edge_hidden_dim_2: int = 128,
             dropout: float = 0.0,
+            token_wise_routing: bool = False,
     ):
         super(RTNoEdgeInit, self).__init__()
         layer = RTTransformerLayer(
@@ -203,6 +208,7 @@ class RTNoEdgeInit(nn.Module):
             edge_hidden_dim_1,
             edge_hidden_dim_2,
             dropout,
+            token_wise_routing=token_wise_routing,
         )
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
 
@@ -243,6 +249,7 @@ class RTTransformerLayer(nn.Module):
         edge_hidden_dim_1: int = 128,
         edge_hidden_dim_2: int = 128,
         dropout: float = 0.0,
+        token_wise_routing: bool = False,
     ):
         super(RTTransformerLayer, self).__init__()
         self.edge_update = True
@@ -261,7 +268,8 @@ class RTTransformerLayer(nn.Module):
             self.linear_net_n = \
                 MoELayer(node_dim, 
                     node_hidden_dim, 
-                    node_dim)
+                    node_dim,
+                    token_wise_routing=token_wise_routing)
         
         self.norm1_n = nn.LayerNorm(node_dim)
         self.norm2_n = nn.LayerNorm(node_dim)
@@ -271,7 +279,8 @@ class RTTransformerLayer(nn.Module):
                 self.linear_net1_e = \
                     MoELayer(node_dim * 2 + edge_dim * 2, 
                         edge_hidden_dim_1, 
-                        edge_dim)
+                        edge_dim,
+                        token_wise_routing=token_wise_routing)
 
                 self.linear_net2_e = \
                     nn.Sequential(
@@ -307,7 +316,8 @@ class RTTransformerLayer(nn.Module):
                 self.linear_net2_e = \
                     MoELayer(edge_dim, 
                         edge_hidden_dim_2, 
-                        edge_dim)
+                        edge_dim,
+                        token_wise_routing=token_wise_routing)
 
             
             self.norm1_e = nn.LayerNorm(edge_dim)
@@ -355,7 +365,8 @@ class RTTransformerLayer(nn.Module):
                 edge_features = self.norm2_e(edge_features)
                 (scores_n, scores_e), (logits_n, logits_e) = (None, None), (None, None)
             else:
-                edge_features = edge_features + self.dropout(self.linear_net1_e(concatenated_inputs))
+                edge_features = self.linear_net1_e(concatenated_inputs)
+                edge_features = edge_features + self.dropout(edge_features)
                 edge_features = self.norm1_e(edge_features)
                 
                 ########## Edge MLP with MoE ##########

@@ -5,7 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
-from .moe import kalman, cls_head, linearnet1e, nomoe
+from .moe import kalman, cls_head, linearnet1e, nomoe, token_wise_routing_for_first_two_layers
 
 def contrastive_three_modes_loss(features, scores, temp=0.1, base_temperature=0.07, positive_thresh=0.1, negative_thresh=2.0):
     device = (torch.device('cuda') if features.is_cuda
@@ -174,10 +174,12 @@ class MART(nn.Module):
         # self.hyper_moes_node = nn.ModuleList()
         # self.pair_moes_edge = nn.ModuleList()
         # self.hyper_moes_edge = nn.ModuleList()
-        
+
         for i in range(args.num_layers):
             if i == 0:
-                self.pair_encoders.append(RT(**module_args))
+                self.pair_encoders.append(RT(**module_args, token_wise_routing=token_wise_routing_for_first_two_layers))
+            elif i == 1:
+                self.pair_encoders.append(RTNoEdgeInit(**module_args, token_wise_routing=token_wise_routing_for_first_two_layers))
             else:
                 self.pair_encoders.append(RTNoEdgeInit(**module_args))
             # # ADD MOE
@@ -188,7 +190,9 @@ class MART(nn.Module):
         
         for i in range(args.num_layers):
             if i == 0:
-                self.hyper_encoders.append(HRT(**module_args))
+                self.hyper_encoders.append(HRT(**module_args, token_wise_routing=token_wise_routing_for_first_two_layers))
+            elif i == 1:
+                self.hyper_encoders.append(HRTNoEdgeInit(**module_args, token_wise_routing=token_wise_routing_for_first_two_layers))
             else:
                 self.hyper_encoders.append(HRTNoEdgeInit(**module_args))
             # # ADD MOE
