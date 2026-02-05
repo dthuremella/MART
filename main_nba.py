@@ -13,6 +13,9 @@ from torch.optim import lr_scheduler
 from utils import *
 from models.mart import MART
 from loaders.dataloader_nba import NBADataset
+from fmoe.transformer import fmoefy
+import time
+
 
 
 def main():
@@ -32,7 +35,8 @@ def main():
     loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, shuffle=False, num_workers=8)
 
     model = MART(opts).cuda()
-    print(model)
+    model = fmoefy(model, fmoe_num_experts=8)
+    # print(model)
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
 
     optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=1e-12)
@@ -140,7 +144,7 @@ def train(epoch, model, optimizer, loader):
 def test(epoch, model, loader):
     model.eval()
     avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
-    
+    t0 = time.time()
     with torch.no_grad():
         for _, data in enumerate(loader):
             x_abs, y = data
@@ -181,7 +185,8 @@ def test(epoch, model, loader):
             avg_meter['fde_4'] += fde_4
             
             avg_meter['counter'] += (num_agents * batch_size)
-    
+    t1 = time.time()
+    print('INFO: Time taken for inference is :', t1 - t0)
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
     print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_1'] / avg_meter['counter'], avg_meter['fde_1'] / avg_meter['counter']))
