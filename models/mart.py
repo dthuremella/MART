@@ -5,7 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
-from utils import moe_n, moe_e
+from utils import moe_n, moe_e, class_token
 
 
 class MLP(nn.Module):
@@ -110,6 +110,8 @@ class MART(nn.Module):
             'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
             'dropout': args.dropout,
         }
+        if class_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, args.past_length, len(args.inputs)))
         
         self.input_dim = len(args.inputs)
         self.input_fc = nn.Linear(self.input_dim, args.model_dim)
@@ -122,17 +124,21 @@ class MART(nn.Module):
         
         for i in range(args.num_layers):
             if i == 0:
-                self.pair_encoders.append(RT(**module_args))
+                self.pair_encoders.append(RT(**module_args, class_token_moe=False))
+            elif i == 1:
+                self.pair_encoders.append(RTNoEdgeInit(**module_args, class_token_moe=False))
             else:
-                self.pair_encoders.append(RTNoEdgeInit(**module_args))
+                self.pair_encoders.append(RTNoEdgeInit(**module_args, class_token_moe=class_token))
         
         module_args['function_type'] = args.function_type
         
         for i in range(args.num_layers):
             if i == 0:
-                self.hyper_encoders.append(HRT(**module_args))
+                self.hyper_encoders.append(HRT(**module_args, class_token_moe=False))
+            elif i == 1:
+                self.hyper_encoders.append(HRTNoEdgeInit(**module_args, class_token_moe=False))
             else:
-                self.hyper_encoders.append(HRTNoEdgeInit(**module_args))
+                self.hyper_encoders.append(HRTNoEdgeInit(**module_args, class_token_moe=class_token))
         
         for i in range(args.sample_k):
             self.add_module("head_%d" % i, Decoder(args))
@@ -145,8 +151,14 @@ class MART(nn.Module):
             inputs.append(x_abs)
         if 'vel_x' in self.args.inputs and 'vel_y' in self.args.inputs:
             inputs.append(x_rel)
-        
+
         inputs = torch.cat(inputs, dim=-1)
+        if class_token:
+            cls_token = self.cls_token.expand(inputs.shape[0], -1, -1, -1)
+            inputs = torch.cat((cls_token, inputs), dim=1)
+            x_abs = torch.cat((cls_token[:, :, :, :x_abs.shape[-1]], x_abs), dim=1)
+            num_agents += 1
+        
         inputs = inputs.view(batch_size*num_agents, length, -1).contiguous()
         cur_pos = x_abs[:, :, [-1]].view(batch_size*num_agents, 1, -1).contiguous()
         
@@ -178,6 +190,8 @@ class MART(nn.Module):
         
         out = torch.cat(out_list, dim=2)
         out = out.view(batch_size, num_agents, self.args.sample_k, self.args.future_length, -1)
+        if class_token:
+            out = out[:,1:,:,:]
         
         return out, avg_expert_idx
     

@@ -68,6 +68,7 @@ class RT(nn.Module):
             edge_hidden_dim_1: int = 128,
             edge_hidden_dim_2: int = 128,
             dropout: float = 0.0,
+            class_token_moe: bool = False,
     ):
         super(RT, self).__init__()
         layer = RTTransformerLayer(
@@ -78,6 +79,7 @@ class RT(nn.Module):
             edge_hidden_dim_1,
             edge_hidden_dim_2,
             dropout,
+            class_token_moe
         )
         # self.aggregation = aggregation # 'cat', 'avg', 'sum', 'att'
         self.aggregation = 'cat'
@@ -166,6 +168,7 @@ class RTNoEdgeInit(nn.Module):
             edge_hidden_dim_1: int = 128,
             edge_hidden_dim_2: int = 128,
             dropout: float = 0.0,
+            class_token_moe: bool = False,
     ):
         super(RTNoEdgeInit, self).__init__()
         layer = RTTransformerLayer(
@@ -176,6 +179,7 @@ class RTNoEdgeInit(nn.Module):
             edge_hidden_dim_1,
             edge_hidden_dim_2,
             dropout,
+            class_token_moe
         )
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
 
@@ -199,6 +203,7 @@ class RTTransformerLayer(nn.Module):
         edge_hidden_dim_1: int = 128,
         edge_hidden_dim_2: int = 128,
         dropout: float = 0.0,
+        class_token_moe: bool = False,
     ):
         super(RTTransformerLayer, self).__init__()
         self.edge_update = True
@@ -207,7 +212,7 @@ class RTTransformerLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         if moe_n:
             self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
-                num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+                num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
         else:
             self.linear_net_n = nn.Sequential(
                 nn.Linear(node_dim, node_hidden_dim),
@@ -228,7 +233,7 @@ class RTTransformerLayer(nn.Module):
             )
             if moe_e:
                 self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
-                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
             else:
                 self.linear_net2_e = nn.Sequential(
                     nn.Linear(edge_dim, edge_hidden_dim_2),

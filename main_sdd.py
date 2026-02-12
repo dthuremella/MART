@@ -150,7 +150,7 @@ def train(epoch, model, optimizer, loader):
                             torch.mean(torch.norm(y_pred - y, dim=-1), dim=3),
                             dim=2)[0] * mask    # mask out loss for invalid
                         ) 
-        expert_bias_alpha = 1
+        expert_bias_alpha = 10000
         total_loss += expert_bias_alpha * avg_expert_idx
 
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
@@ -241,8 +241,8 @@ if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     opts = load_config(args.config)
-    if args.test:
-        opts.batch_size = 1
+    # if args.test:
+    #     opts.batch_size = 1
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     main()

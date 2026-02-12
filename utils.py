@@ -16,9 +16,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-moe_e = True
+moe_e = False
 moe_n = True
 even_harmonic = True
+class_token = True # only done for second two layers
 
 class GSoftmaxGate(NaiveGate):
     r"""
@@ -165,6 +166,10 @@ class FMoEHarmonic(FMoE):
         according to the gate.  The score of the selected gate given by the
         expert is multiplied to the experts' output tensors as a weight.
         """
+        inp_shape = moe_inp.shape
+        if len(inp_shape) > 2: # done for class_token_moe
+            inp_orig = moe_inp
+            moe_inp = moe_inp[:, 0, :] if len(inp_shape) == 3 else moe_inp[:, 0, 0, :]
 
         moe_inp_batch_size = tree.flatten(
             tree.map_structure(lambda tensor: tensor.shape[0], moe_inp)
@@ -189,6 +194,12 @@ class FMoEHarmonic(FMoE):
             moe_inp = tree.map_structure(slice_func, moe_inp)
 
         gate_top_k_idx, gate_score, avg_expert_idx = self.gate(moe_inp)
+
+        if len(inp_shape) > 2: # done for class_token_moe
+            num_tokens = inp_shape[1] if len(inp_shape) == 3 else inp_shape[1] * inp_shape[1]
+            gate_top_k_idx = gate_top_k_idx.repeat_interleave(num_tokens, 0)  # (batch_size, top_k)
+            gate_score = gate_score.repeat_interleave(num_tokens, 0)  # (batch_size, top_k)
+            moe_inp = inp_orig.reshape(-1, inp_shape[-1]) # use original input for expert forward
 
         if self.gate_hook is not None:
             self.gate_hook(gate_top_k_idx, gate_score, None)
@@ -290,6 +301,7 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
         expert_dp_comm="none",
         expert_rank=0,
         top_k=2,
+        class_token_moe=False,
         **kwargs
     ):
         # Build heterogeneous expert list
@@ -310,10 +322,11 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
             **kwargs
         )
         self.mark_parallel_comm(expert_dp_comm)
+        self.class_token_moe = class_token_moe
 
     def forward(self, inp: torch.Tensor, ret={}):
         original_shape = inp.shape
-        inp = inp.reshape(-1, self.d_model)
+        if not self.class_token_moe: inp = inp.reshape(-1, self.d_model)
         output, avg_expert_idx = super().forward(inp)
         ret["avg_expert_idx"] = avg_expert_idx
         return output.reshape(original_shape)

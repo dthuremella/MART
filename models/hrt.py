@@ -151,7 +151,8 @@ class HRT(nn.Module):
             dropout: float = 0.0,
             aggregation: str = 'avg',
             scale: int = 2,
-            function_type: int = 1
+            function_type: int = 1,
+            class_token_moe: bool = False
     ):
         super(HRT, self).__init__()
         self.scale = scale
@@ -163,7 +164,8 @@ class HRT(nn.Module):
             edge_hidden_dim_1,
             edge_hidden_dim_2,
             dropout,
-            aggregation
+            aggregation,
+            class_token_moe
         )
         
         print('[INFO] HRT Agg: {}'.format(aggregation))
@@ -249,7 +251,8 @@ class HRTNoEdgeInit(nn.Module):
             dropout: float = 0.0,
             aggregation: str = 'avg',
             scale: int = 2,
-            function_type: int = 1
+            function_type: int = 1,
+            class_token_moe: bool = False
     ):
         super(HRTNoEdgeInit, self).__init__()
         layer = HRTTransformerLayer(
@@ -260,7 +263,8 @@ class HRTNoEdgeInit(nn.Module):
             edge_hidden_dim_1,
             edge_hidden_dim_2,
             dropout,
-            aggregation
+            aggregation,
+            class_token_moe
         )
         
         self.aggregation = aggregation # add or att
@@ -286,7 +290,8 @@ class HRTTransformerLayer(nn.Module):
         edge_hidden_dim_1: int = 128,
         edge_hidden_dim_2: int = 128,
         dropout: float = 0.0,
-        aggregation: str = 'avg'
+        aggregation: str = 'avg',
+        class_token_moe: bool = False
     ):
         super(HRTTransformerLayer, self).__init__()
         self.aggregation = aggregation
@@ -297,7 +302,7 @@ class HRTTransformerLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         if moe_n:
             self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
-            num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+            num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
         else:
             self.linear_net_n = nn.Sequential(
                 nn.Linear(node_dim, node_hidden_dim),
@@ -319,7 +324,7 @@ class HRTTransformerLayer(nn.Module):
             
             if moe_e:
                 self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
-                num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+                num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
             else:
                 self.linear_net2_e = nn.Sequential(
                     nn.Linear(edge_dim, edge_hidden_dim_2),
