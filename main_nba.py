@@ -13,7 +13,7 @@ from torch.optim import lr_scheduler
 from utils import *
 from models.mart import MART
 from loaders.dataloader_nba import NBADataset
-from fmoe.transformer import fmoefy
+from fmoe.megatron import fmoefy
 import time
 
 
@@ -35,7 +35,7 @@ def main():
     loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, shuffle=False, num_workers=8)
 
     model = MART(opts).cuda()
-    model = fmoefy(model, fmoe_num_experts=8)
+    # model = fmoefy(model, fmoe_num_experts=8)
     # print(model)
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
 
@@ -46,7 +46,7 @@ def main():
     elif opts.scheduler_type == 'MultiStepLR':
         scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=opts.milestones, gamma=opts.decay_gamma)
 
-    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0])
+    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0] + args.tag) 
     os.makedirs(model_save_dir, exist_ok=True)
 
     if args.test:
@@ -116,7 +116,7 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred = model(x_abs, x_rel)
+        y_pred, avg_expert_idx = model(x_abs, x_rel)
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -125,7 +125,9 @@ def train(epoch, model, optimizer, loader):
         y = y[:, :, None, :, :]
         
         total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
-        
+        expert_bias_alpha = 1
+        total_loss += expert_bias_alpha * avg_expert_idx
+
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
         
@@ -156,7 +158,7 @@ def test(epoch, model, loader):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred = model(x_abs, x_rel)
+            y_pred, _ = model(x_abs, x_rel)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -203,6 +205,7 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, default='nba', metavar='N', help='dataset name')
     parser.add_argument('--config', type=str, default='configs/mart_nba_reproduce.yaml', help='config path')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
+    parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
     parser.add_argument("--test", action='store_true')
 
     args = parser.parse_args()

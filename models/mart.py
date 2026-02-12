@@ -5,6 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
+from utils import moe_n, moe_e
 
 
 class MLP(nn.Module):
@@ -103,10 +104,10 @@ class MART(nn.Module):
             'num_layers': 1,
             'num_heads': args.num_heads,
             'node_dim': args.model_dim,
-            'node_hidden_dim': args.hidden_dim,
+            'node_hidden_dim': int(args.hidden_dim / args.div_by),
             'edge_dim': args.model_dim,
             'edge_hidden_dim_1': args.hidden_dim,
-            'edge_hidden_dim_2': args.hidden_dim,
+            'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
             'dropout': args.dropout,
         }
         
@@ -157,10 +158,17 @@ class MART(nn.Module):
         n_pair, e_pair = n_initial, None
         n_group, e_group, G = n_initial, None, None
         
+        avg_expert_idx = 0
         for i in range(self.args.num_layers):
-            n_pair, e_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
-            n_group, e_group, G = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
-        
+            n_pair, e_pair, avg_expert_idx_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
+            n_group, e_group, G, avg_expert_idx_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
+
+            avg_expert_idx = avg_expert_idx_group + avg_expert_idx_pair
+        num_moes = 0
+        if moe_n: num_moes += 2
+        if moe_e: num_moes += 2
+        avg_expert_idx = avg_expert_idx / (num_moes * self.args.num_layers)
+
         n_final = torch.cat([n_initial, n_pair, n_group], dim=-1)
         
         out_list = []
@@ -171,5 +179,5 @@ class MART(nn.Module):
         out = torch.cat(out_list, dim=2)
         out = out.view(batch_size, num_agents, self.args.sample_k, self.args.future_length, -1)
         
-        return out
+        return out, avg_expert_idx
     

@@ -5,6 +5,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from fmoe.transformer import FMoETransformerMLP
+from utils import GSoftmaxGate, moe_e, moe_n, even_harmonic, FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
+
+if even_harmonic: moe_transformer_mlp, moe_gate = FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
+else: moe_transformer_mlp, moe_gate = FMoETransformerMLP, GSoftmaxGate
 
 
 def encode_onehot(labels):
@@ -142,12 +147,12 @@ class RT(nn.Module):
         edge_features = self.init_edge(node_features, rel_rec, rel_send)
         
         for layer in self.layers:
-            node_features, edge_features = layer(node_features, edge_features)
+            node_features, edge_features, avg_expert_idx = layer(node_features, edge_features)
         
         if return_edge:
-            return node_features, edge_features
+            return node_features, edge_features, avg_expert_idx
         
-        return node_features
+        return node_features, avg_expert_idx
 
 
 class RTNoEdgeInit(nn.Module):
@@ -176,12 +181,12 @@ class RTNoEdgeInit(nn.Module):
 
     def forward(self, node_features, edge_features, return_edge=False):
         for layer in self.layers:
-            node_features, edge_features = layer(node_features, edge_features)
+            node_features, edge_features, avg_expert_idx = layer(node_features, edge_features)
         
         if return_edge:
-            return node_features, edge_features
+            return node_features, edge_features, avg_expert_idx
         
-        return node_features
+        return node_features, avg_expert_idx
 
 
 class RTTransformerLayer(nn.Module):
@@ -200,12 +205,16 @@ class RTTransformerLayer(nn.Module):
         self.attention_layer = RTAttentionLayer(num_heads, node_dim, edge_dim)
         
         self.dropout = nn.Dropout(dropout)
-        self.linear_net_n = nn.Sequential(
-            nn.Linear(node_dim, node_hidden_dim),
-            # nn.Dropout(dropout),
-            nn.ReLU(inplace=True),
-            nn.Linear(node_hidden_dim, node_dim),
-        )
+        if moe_n:
+            self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
+                num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+        else:
+            self.linear_net_n = nn.Sequential(
+                nn.Linear(node_dim, node_hidden_dim),
+                # nn.Dropout(dropout),
+                nn.ReLU(inplace=True),
+                nn.Linear(node_hidden_dim, node_dim),
+            )
         
         self.norm1_n = nn.LayerNorm(node_dim)
         self.norm2_n = nn.LayerNorm(node_dim)
@@ -217,13 +226,17 @@ class RTTransformerLayer(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(edge_hidden_dim_1, edge_dim),
             )
-            
-            self.linear_net2_e = nn.Sequential(
-                nn.Linear(edge_dim, edge_hidden_dim_2),
-                # nn.Dropout(dropout),
-                nn.ReLU(inplace=True),
-                nn.Linear(edge_hidden_dim_2, edge_dim),
-            )
+            if moe_e:
+                self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
+                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+            else:
+                self.linear_net2_e = nn.Sequential(
+                    nn.Linear(edge_dim, edge_hidden_dim_2),
+                    # nn.Dropout(dropout),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(edge_hidden_dim_2, edge_dim),
+                )
+
             
             self.norm1_e = nn.LayerNorm(edge_dim)
             self.norm2_e = nn.LayerNorm(edge_dim)
@@ -234,7 +247,12 @@ class RTTransformerLayer(nn.Module):
         node_features = node_features + self.dropout(attn_out)
         node_features = self.norm1_n(node_features)
         
-        linear_out = self.linear_net_n(node_features)
+        ret = {}
+        avg_expert_idx = 0
+        linear_out = self.linear_net_n(node_features, ret) if even_harmonic and moe_n else self.linear_net_n(node_features)
+        avg_expert_idx += ret.get("avg_expert_idx", 0)
+        ret = {}
+
         node_features = node_features + self.dropout(linear_out)
         node_features = self.norm2_n(node_features)
         
@@ -252,10 +270,13 @@ class RTTransformerLayer(nn.Module):
             edge_features = edge_features + self.dropout(self.linear_net1_e(concatenated_inputs))
             edge_features = self.norm1_e(edge_features)
             
-            edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
+            if even_harmonic and moe_e: edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features, ret))
+            else: edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
+            avg_expert_idx += ret.get("avg_expert_idx", 0)
+
             edge_features = self.norm2_e(edge_features)
         
-        return node_features, edge_features
+        return node_features, edge_features, avg_expert_idx
 
 
 class RTAttentionLayer(nn.Module):

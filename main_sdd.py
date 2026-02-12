@@ -116,7 +116,7 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred = model(x_abs, x_rel)
+        y_pred, avg_expert_idx = model(x_abs, x_rel)
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -125,7 +125,9 @@ def train(epoch, model, optimizer, loader):
         y = y[:, :, None, :, :]
         
         total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
-        
+        expert_bias_alpha = 1
+        total_loss += expert_bias_alpha * avg_expert_idx
+
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
 
@@ -166,7 +168,7 @@ def test(epoch, model, loader):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred = model(x_abs, x_rel)
+            y_pred, _ = model(x_abs, x_rel)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
