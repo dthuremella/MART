@@ -13,6 +13,7 @@ from torch.optim import lr_scheduler
 from utils import *
 from models.mart import MART
 from loaders.dataloader_sdd import TrajectoryDataset
+import time
 
 def my_collate(batch):
     '''
@@ -180,7 +181,8 @@ def train(epoch, model, optimizer, loader):
 def test(epoch, model, loader):
     model.eval()
     avg_meter = {'epoch': epoch, 'ade': 0, 'fde': 0, 'counter': 0}
-    
+
+    t0 = time.time()
     with torch.no_grad():
         for _, data in enumerate(loader):
             x_abs, y = data
@@ -202,14 +204,18 @@ def test(epoch, model, loader):
             y = np.array(y.cpu()) # B, N, T, 2
             y = y[:, :, None, :, :]
             
-            ade = np.mean(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
-            fde = np.mean(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2)) * (num_agents * batch_size)
+            mask = np.array(x_abs[:,:,0,-1].cpu())
+            ade = np.sum(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2) * mask)
+            fde = np.sum(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2) * mask)
                         
             avg_meter['ade'] += ade
             avg_meter['fde'] += fde
             
-            avg_meter['counter'] += (num_agents * batch_size)
+            avg_meter['counter'] += mask.sum()
     
+    t1 = time.time()
+    print('INFO: Time taken for inference is :', t1 - t0)
+
     avg_meter['ade'] /= opts.scale
     avg_meter['fde'] /= opts.scale
     
