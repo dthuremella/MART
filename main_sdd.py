@@ -14,6 +14,26 @@ from utils import *
 from models.mart import MART
 from loaders.dataloader_sdd import TrajectoryDataset
 
+def my_collate(batch):
+    '''
+    Pads batch of variable length
+    '''
+    batch_x = []
+    batch_y = []
+    for t in batch:
+        x, y = t
+        batch_x.append(x)
+        batch_y.append(y)
+
+    ## pad sequences with zeros  
+    batch_x_padded = torch.nn.utils.rnn.pad_sequence(batch_x, batch_first=True)
+    batch_y_padded = torch.nn.utils.rnn.pad_sequence(batch_y, batch_first=True)
+
+    ## add mask
+    pad_ones = torch.nn.utils.rnn.pad_sequence(batch_x, batch_first=True, padding_value=1)
+    mask = (batch_x_padded - pad_ones) + 1    ## ones for where there's values
+    batch_x_mask = torch.cat((batch_x_padded, mask[:,:,:,:1]), dim=-1)
+    return batch_x_mask, batch_y_padded
 
 def main():
     if args.seed >= 0:
@@ -27,10 +47,10 @@ def main():
 
     if not args.test:
         dataset_train = TrajectoryDataset(mode='train', scale=opts.scale, inputs=opts.inputs)
-        loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=1, shuffle=True, num_workers=8, drop_last=True)
+        loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=opts.batch_size, collate_fn=my_collate, shuffle=True, num_workers=8, drop_last=True)
         
     dataset_test = TrajectoryDataset(mode='test', scale=opts.scale, inputs=opts.inputs)
-    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=1, shuffle=False, num_workers=8)
+    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, collate_fn=my_collate, shuffle=False, num_workers=8)
 
     model = MART(opts).cuda()
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
@@ -42,7 +62,7 @@ def main():
     elif opts.scheduler_type == 'MultiStepLR':
         scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=opts.milestones, gamma=opts.decay_gamma)
 
-    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0])
+    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0] + args.tag)
     os.makedirs(model_save_dir, exist_ok=True)
 
     if args.test:
@@ -119,12 +139,16 @@ def train(epoch, model, optimizer, loader):
         y_pred, avg_expert_idx = model(x_abs, x_rel)
 
         if opts.pred_rel:
-            cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
+            cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
             y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
             
         y = y[:, :, None, :, :]
         
-        total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
+        mask = x_abs[:,:,0,-1]
+        total_loss = torch.sum(torch.min(      # minADE
+                            torch.mean(torch.norm(y_pred - y, dim=-1), dim=3),
+                            dim=2)[0] * mask    # mask out loss for invalid
+                        ) 
         expert_bias_alpha = 1
         total_loss += expert_bias_alpha * avg_expert_idx
 
@@ -171,7 +195,7 @@ def test(epoch, model, loader):
             y_pred, _ = model(x_abs, x_rel)
 
             if opts.pred_rel:
-                cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
+                cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
                 y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
 
             y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
@@ -203,6 +227,7 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default='configs/mart_sdd_reproduce.yaml', help='config path')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument("--test", action='store_true')
+    parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
 
     args = parser.parse_args()
 
@@ -210,6 +235,8 @@ if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     opts = load_config(args.config)
+    if args.test:
+        opts.batch_size = 1
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     main()

@@ -140,7 +140,6 @@ class MART(nn.Module):
     def forward(self, x_abs, x_rel):
         inputs = []
         batch_size, num_agents, length, _ = x_abs.shape
-        cur_pos = x_abs[:, :, [-1]].view(batch_size*num_agents, 1, -1).contiguous()
                 
         if 'pos_x' in self.args.inputs and 'pos_y' in self.args.inputs:
             inputs.append(x_abs)
@@ -149,6 +148,7 @@ class MART(nn.Module):
         
         inputs = torch.cat(inputs, dim=-1)
         inputs = inputs.view(batch_size*num_agents, length, -1).contiguous()
+        cur_pos = x_abs[:, :, [-1]].view(batch_size*num_agents, 1, -1).contiguous()
         
         inputs_fc = self.input_fc(inputs).view(batch_size*num_agents, length, self.args.model_dim)
         inputs_pos = self.pos_encoder(inputs_fc, num_a=batch_size*num_agents)
