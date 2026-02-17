@@ -179,7 +179,7 @@ class MART(nn.Module):
         num_moes = 0
         if moe_n: num_moes += 2
         if moe_e: num_moes += 2
-        avg_expert_idx = avg_expert_idx / (num_moes * self.args.num_layers)
+        avg_expert_idx = 0 if num_moes == 0 else avg_expert_idx / (num_moes * self.args.num_layers)
 
         n_final = torch.cat([n_initial, n_pair, n_group], dim=-1)
         

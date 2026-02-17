@@ -15,8 +15,8 @@ from models.mart import MART
 from loaders.dataloader_nba import NBADataset
 from fmoe.megatron import fmoefy
 import time
-
-
+from deepspeed.profiling.flops_profiler import FlopsProfiler
+import torch.cuda.nvtx as nvtx
 
 def main():
     if args.seed >= 0:
@@ -55,7 +55,8 @@ def main():
         print('[INFO] Loading model from:', model_path)
         model_ckpt = torch.load(model_path)
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
-        ade, fde = test(model_ckpt['epoch'], model, loader_test)
+        prof = FlopsProfiler(model) # flops
+        ade, fde = test(model_ckpt['epoch'], model, loader_test, prof)
         os.makedirs('results', exist_ok=True)
         with open(os.path.join('./results', '{}_result.csv'.format(args.dataset)), 'w', newline='') as f:
             csv_writer = writer(f)
@@ -143,10 +144,10 @@ def train(epoch, model, optimizer, loader):
     return avg_meter['loss'] / avg_meter['counter']
 
 
-def test(epoch, model, loader):
+def test(epoch, model, loader, prof=None):
     model.eval()
     avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
-    t0 = time.time()
+    t0 = time.time();     prof.start_profile(); nvtx.range_push("forward")    # start measuring
     with torch.no_grad():
         for _, data in enumerate(loader):
             x_abs, y = data
@@ -187,8 +188,9 @@ def test(epoch, model, loader):
             avg_meter['fde_4'] += fde_4
             
             avg_meter['counter'] += (num_agents * batch_size)
-    t1 = time.time()
+    t1 = time.time();     prof.stop_profile(); nvtx.range_pop()     # stop measuring
     print('INFO: Time taken for inference is :', t1 - t0)
+    print('INFO: FLOPs for inference is :', prof.get_total_flops())
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
     print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_1'] / avg_meter['counter'], avg_meter['fde_1'] / avg_meter['counter']))

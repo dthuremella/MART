@@ -150,7 +150,7 @@ def train(epoch, model, optimizer, loader):
                             torch.mean(torch.norm(y_pred - y, dim=-1), dim=3),
                             dim=2)[0] * mask    # mask out loss for invalid
                         ) 
-        expert_bias_alpha = 10000
+        expert_bias_alpha = 100
         total_loss += expert_bias_alpha * avg_expert_idx
 
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents

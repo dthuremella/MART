@@ -6,7 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fmoe.transformer import FMoETransformerMLP
-from utils import GSoftmaxGate, moe_e, moe_n, even_harmonic, FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
+from utils import GSoftmaxGate, moe_e, moe_n, even_harmonic, viz
+from utils import FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
 
 if even_harmonic: moe_transformer_mlp, moe_gate = FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
 else: moe_transformer_mlp, moe_gate = FMoETransformerMLP, GSoftmaxGate
@@ -211,8 +212,12 @@ class RTTransformerLayer(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
         if moe_n:
-            self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
-                num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
+            if even_harmonic:
+                self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
+                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
+            else:
+                self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
+                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
         else:
             self.linear_net_n = nn.Sequential(
                 nn.Linear(node_dim, node_hidden_dim),
@@ -232,8 +237,12 @@ class RTTransformerLayer(nn.Module):
                 nn.Linear(edge_hidden_dim_1, edge_dim),
             )
             if moe_e:
-                self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
+                if even_harmonic:
+                    self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
                     num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
+                else:
+                    self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
+                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
             else:
                 self.linear_net2_e = nn.Sequential(
                     nn.Linear(edge_dim, edge_hidden_dim_2),
