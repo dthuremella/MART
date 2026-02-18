@@ -11,12 +11,14 @@ from torch import optim
 from torch.optim import lr_scheduler
 
 from utils import *
-from models.mart import MART
-from loaders.dataloader_nba import NBADataset
+from models.mart import MART, viz
+from loaders.dataloader_nba import NBADataset, attribute_dataset
 from fmoe.megatron import fmoefy
 import time
 from deepspeed.profiling.flops_profiler import FlopsProfiler
 import torch.cuda.nvtx as nvtx
+
+measure_nvtx = False
 
 def main():
     if args.seed >= 0:
@@ -117,7 +119,7 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred, avg_expert_idx = model(x_abs, x_rel)
+        y_pred, avg_expert_idx, _ = model(x_abs, x_rel)
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -147,7 +149,16 @@ def train(epoch, model, optimizer, loader):
 def test(epoch, model, loader, prof=None):
     model.eval()
     avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
-    t0 = time.time();     prof.start_profile(); nvtx.range_push("forward")    # start measuring
+    if viz:
+        import pickle
+        scores = {}
+        for score_type in ['gate_score', 'top_k_idx']:
+            scores[score_type] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
+        xs, ys, ypreds = [], [], []
+
+    t0 = time.time()
+    if prof: prof.start_profile()
+    if measure_nvtx: nvtx.range_push("forward")    # start measuring
     with torch.no_grad():
         for _, data in enumerate(loader):
             x_abs, y = data
@@ -159,7 +170,16 @@ def test(epoch, model, loader, prof=None):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            y_pred, _ = model(x_abs, x_rel)
+            y_pred, _, score = model(x_abs, x_rel)
+
+            if viz:
+                for score_type in ['gate_score', 'top_k_idx']:
+                    for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
+                        if scores[score_type][score_subtype] is None: continue
+                        scores[score_type][score_subtype].append(torch.stack(score[score_type][score_subtype]))
+                xs.append(x_abs)
+                ys.append(y)
+                ypreds.append(y_pred)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -188,9 +208,21 @@ def test(epoch, model, loader, prof=None):
             avg_meter['fde_4'] += fde_4
             
             avg_meter['counter'] += (num_agents * batch_size)
-    t1 = time.time();     prof.stop_profile(); nvtx.range_pop()     # stop measuring
+    t1 = time.time()
+    if prof: prof.stop_profile()
+    if measure_nvtx: nvtx.range_pop()     # stop measuring
     print('INFO: Time taken for inference is :', t1 - t0)
     print('INFO: FLOPs for inference is :', prof.get_total_flops())
+
+    if viz:
+        for score_type in ['gate_score', 'top_k_idx']:
+            for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
+                scores[score_type][score_subtype] = torch.cat(scores[score_type][score_subtype], dim=1).cpu()
+        xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
+        data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
+        pickle.dump(data_dump, open('viz_scores_nba_{}{}.pkl'.format(args.tag, 'attr' if attribute_dataset else ''), 'wb'))
+
+
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
     print('[{}] minADE/minFDE (1.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_1'] / avg_meter['counter'], avg_meter['fde_1'] / avg_meter['counter']))

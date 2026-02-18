@@ -185,17 +185,42 @@ class FMoEViz(FMoE):
         assert all(
             [batch_size == moe_outp_batch_size[0] for batch_size in moe_outp_batch_size]
         ), "MoE outputs must have the same batch size"
-        return moe_outp
+        return moe_outp, gate_score, gate_top_k_idx
 
-class FMoETransformerMLPViz(FMoETransformerMLP):
-    def forward(self, inp: torch.Tensor):
+class FMoETransformerMLPViz(FMoEViz):
+    r"""
+    A complete MoE MLP module in a Transformer block.
+    * `activation` is the activation function to be used in MLP in each expert.
+    * `d_hidden` is the dimension of the MLP layer.
+    """
+
+    def __init__(
+        self,
+        num_expert=32,
+        d_model=1024,
+        d_hidden=4096,
+        activation=torch.nn.GELU(),
+        expert_dp_comm="none",
+        expert_rank=0,
+        **kwargs
+    ):
+        def one_expert(d_model):
+            return _Expert(1, d_model, d_hidden, activation, rank=0)
+        
+        expert = one_expert
+        super().__init__(num_expert=num_expert, d_model=d_model, expert=expert, **kwargs)
+        self.mark_parallel_comm(expert_dp_comm)
+
+    def forward(self, inp: torch.Tensor, ret={}):
         r"""
         This module wraps up the FMoE module with reshape, residual and layer
         normalization.
         """
         original_shape = inp.shape
         inp = inp.reshape(-1, self.d_model)
-        output = super().forward(inp)
+        output, gate_score, top_k_idx = super().forward(inp)
+        ret['gate_score'] = gate_score.reshape(original_shape[0], -1, 2)
+        ret['top_k_idx'] = top_k_idx.reshape(original_shape[0], -1, 2)
         return output.reshape(original_shape)
 
 class FMoEHarmonic(FMoE):
@@ -400,6 +425,8 @@ class FMoEHarmonic(FMoE):
         assert all(
             [batch_size == moe_outp_batch_size[0] for batch_size in moe_outp_batch_size]
         ), "MoE outputs must have the same batch size"
+
+        if viz: return moe_outp, avg_expert_idx, gate_score, gate_top_k_idx
         return moe_outp, avg_expert_idx
 
 
@@ -450,7 +477,11 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
     def forward(self, inp: torch.Tensor, ret={}):
         original_shape = inp.shape
         if not self.class_token_moe: inp = inp.reshape(-1, self.d_model)
-        output, avg_expert_idx = super().forward(inp)
+        if viz: 
+            output, avg_expert_idx, gate_score, top_k_idx = super().forward(inp)
+            ret["gate_score"] = gate_score.reshape(original_shape[0], -1, 2)
+            ret["top_k_idx"] = top_k_idx.reshape(original_shape[0], -1, 2)
+        else: output, avg_expert_idx = super().forward(inp)
         ret["avg_expert_idx"] = avg_expert_idx
         return output.reshape(original_shape)
 
@@ -471,3 +502,11 @@ def load_config(config_path):
 def get_th(opts, model):
     th = round(model.hyper_encoders[0].group_gen.th.item(), 4)
     return th    
+
+
+if viz:
+    if even_harmonic: moe_transformer_mlp, moe_gate = FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
+    else: moe_transformer_mlp, moe_gate = FMoETransformerMLPViz, GSoftmaxGate
+else:
+    if even_harmonic: moe_transformer_mlp, moe_gate = FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
+    else: moe_transformer_mlp, moe_gate = FMoETransformerMLP, GSoftmaxGate

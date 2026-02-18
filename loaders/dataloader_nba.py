@@ -3,6 +3,8 @@ import numpy as np
 
 from torch.utils.data import Dataset
 
+attribute_dataset = False
+
 
 class NBADataset(Dataset):
     """Dataloder for the Trajectory datasets"""

@@ -5,7 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
-from utils import moe_n, moe_e, class_token
+from utils import moe_n, moe_e, class_token, viz
 
 
 class MLP(nn.Module):
@@ -171,11 +171,24 @@ class MART(nn.Module):
         n_group, e_group, G = n_initial, None, None
         
         avg_expert_idx = 0
+        scores = {}
+        if viz:
+            scores['gate_score'] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
+            scores['top_k_idx'] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
         for i in range(self.args.num_layers):
-            n_pair, e_pair, avg_expert_idx_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
-            n_group, e_group, G, avg_expert_idx_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
-
+            n_pair, e_pair, avg_expert_idx_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
+            n_group, e_group, G, avg_expert_idx_group, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
+            if viz:
+                scores['gate_score']['pair_n'].append(scores_pair['gate_score_n'])
+                scores['gate_score']['pair_e'].append(scores_pair['gate_score_e'])
+                scores['gate_score']['group_n'].append(scores_group['gate_score_n'])
+                scores['gate_score']['group_e'].append(scores_group['gate_score_e'])
+                scores['top_k_idx']['pair_n'].append(scores_pair['top_k_idx_n'])
+                scores['top_k_idx']['pair_e'].append(scores_pair['top_k_idx_e'])
+                scores['top_k_idx']['group_n'].append(scores_group['top_k_idx_n'])
+                scores['top_k_idx']['group_e'].append(scores_group['top_k_idx_e'])
             avg_expert_idx = avg_expert_idx_group + avg_expert_idx_pair
+
         num_moes = 0
         if moe_n: num_moes += 2
         if moe_e: num_moes += 2
@@ -193,5 +206,5 @@ class MART(nn.Module):
         if class_token:
             out = out[:,1:,:,:]
         
-        return out, avg_expert_idx
+        return out, avg_expert_idx, scores
     

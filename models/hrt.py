@@ -6,11 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fmoe.transformer import FMoETransformerMLP
-from utils import moe_e, moe_n, viz, even_harmonic
-from utils import GSoftmaxGate, GSoftmaxHarmonicGate, FMoETransformerMLPHarmonic
-
-if even_harmonic: moe_transformer_mlp, moe_gate = FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
-else: moe_transformer_mlp, moe_gate = FMoETransformerMLP, GSoftmaxGate
+from utils import moe_e, moe_n, even_harmonic, viz
+from utils import moe_transformer_mlp, moe_gate
 
 
 def encode_onehot(labels):
@@ -231,12 +228,12 @@ class HRT(nn.Module):
         edge_features = self.init_edge(node_features, G)
         
         for layer in self.layers:
-            node_features, edge_features, avg_expert_idx = layer(node_features, edge_features, G)
+            node_features, edge_features, avg_expert_idx, scores = layer(node_features, edge_features, G)
         
         if return_edge:
-            return node_features, edge_features, G, avg_expert_idx
+            return node_features, edge_features, G, avg_expert_idx, scores
         
-        return node_features, G, avg_expert_idx
+        return node_features, G, avg_expert_idx, scores
 
 
 class HRTNoEdgeInit(nn.Module):
@@ -273,12 +270,12 @@ class HRTNoEdgeInit(nn.Module):
                 
     def forward(self, node_features, edge_features, G, return_edge=False):
         for layer in self.layers:
-            node_features, edge_features, avg_expert_idx = layer(node_features, edge_features, G)
+            node_features, edge_features, avg_expert_idx, scores = layer(node_features, edge_features, G)
         
         if return_edge:
-            return node_features, edge_features, G, avg_expert_idx
+            return node_features, edge_features, G, avg_expert_idx, scores
             
-        return node_features, G, avg_expert_idx
+        return node_features, G, avg_expert_idx, scores
 
 
 class HRTTransformerLayer(nn.Module):
@@ -352,8 +349,12 @@ class HRTTransformerLayer(nn.Module):
         
         ret = {}
         avg_expert_idx = 0
-        linear_out = self.linear_net_n(node_features, ret) if even_harmonic and moe_n else self.linear_net_n(node_features)
+        scores = {}
+        linear_out = self.linear_net_n(node_features, ret) if moe_n and (even_harmonic or viz) else self.linear_net_n(node_features)
         avg_expert_idx += ret.get("avg_expert_idx", 0)
+        if viz:
+            scores['gate_score_n'] = ret.get("gate_score", None)
+            scores['top_k_idx_n'] = ret.get("top_k_idx", None)
         ret = {}
 
         node_features = node_features + self.dropout(linear_out)
@@ -370,13 +371,16 @@ class HRTTransformerLayer(nn.Module):
             edge_features = edge_features + self.dropout(self.linear_net1_e(concatenated_inputs))
             edge_features = self.norm1_e(edge_features)
             
-            if even_harmonic and moe_e: edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features, ret))
+            if moe_e and (even_harmonic or viz): edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features, ret))
             else: edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
             avg_expert_idx += ret.get("avg_expert_idx", 0)
+            if viz:
+                scores['gate_score_e'] = ret.get("gate_score", None)
+                scores['top_k_idx_e'] = ret.get("top_k_idx", None)  
             
             edge_features = self.norm2_e(edge_features)
 
-        return node_features, edge_features, avg_expert_idx
+        return node_features, edge_features, avg_expert_idx, scores
 
 
 
