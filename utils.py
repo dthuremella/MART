@@ -16,12 +16,25 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-viz = False
+viz = True
 
 moe_e = True
 moe_n = True
 even_harmonic = False
-class_token = False # only done for second two layers
+class_token = False # only done for second two layers, need to use even_harmonic for cls layers currently (don't turn on without even_harmonic)
+class_token_all_layers = False
+class_token_harmonic_div_is_always_1 = False
+
+_call_count = 0
+class _ExpertPrint(_Expert):
+    def forward(self, inp, fwd_expert_count):
+        global _call_count
+        _call_count += 1
+        # print(f"Expert call #{_call_count}, inp.shape: {inp.shape}")
+        x = self.htoh4(inp, fwd_expert_count)
+        x = self.activation(x)
+        x = self.h4toh(x, fwd_expert_count)
+        return x
 
 class GSoftmaxGate(NaiveGate):
     r"""
@@ -205,7 +218,7 @@ class FMoETransformerMLPViz(FMoEViz):
         **kwargs
     ):
         def one_expert(d_model):
-            return _Expert(1, d_model, d_hidden, activation, rank=0)
+            return _ExpertPrint(1, d_model, d_hidden, activation, rank=0)
         
         expert = one_expert
         super().__init__(num_expert=num_expert, d_model=d_model, expert=expert, **kwargs)
@@ -507,6 +520,17 @@ def get_th(opts, model):
 if viz:
     if even_harmonic: moe_transformer_mlp, moe_gate = FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
     else: moe_transformer_mlp, moe_gate = FMoETransformerMLPViz, GSoftmaxGate
+
+    if class_token: 
+        moe_transformer_mlp_noncls = FMoETransformerMLPViz # makes it so that first 2 layers use equal div1 experts and aren't included in bias loss
+        moe_gate_noncls = GSoftmaxGate
+    else: moe_transformer_mlp_noncls, moe_gate_noncls = None, None
 else:
     if even_harmonic: moe_transformer_mlp, moe_gate = FMoETransformerMLPHarmonic, GSoftmaxHarmonicGate
     else: moe_transformer_mlp, moe_gate = FMoETransformerMLP, GSoftmaxGate
+
+    if even_harmonic and class_token: 
+        moe_transformer_mlp_noncls = FMoETransformerMLP # makes it so that first 2 layers use equal div1 experts and aren't included in bias loss
+        moe_gate_noncls = GSoftmaxGate
+    else: moe_transformer_mlp_noncls, moe_gate_noncls = None, None
+

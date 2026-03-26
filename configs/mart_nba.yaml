@@ -20,9 +20,9 @@ pred_rel: False
 num_epochs: 100
 lr: 0.0005
 clip_grad: null
-batch_size: 512
+batch_size: 64
 scheduler_type: MultiStepLR
-# milestones: [75]
-milestones: [100, 200]
+milestones: [50,100]
+# milestones: [100, 200]
 decay_gamma: 0.5
 div_by: 2

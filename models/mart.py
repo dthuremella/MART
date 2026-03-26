@@ -5,7 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
-from utils import moe_n, moe_e, class_token, viz
+from utils import moe_n, moe_e, class_token, viz, class_token_harmonic_div_is_always_1, class_token_all_layers
 
 
 class MLP(nn.Module):
@@ -110,6 +110,12 @@ class MART(nn.Module):
             'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
             'dropout': args.dropout,
         }
+        if class_token and class_token_harmonic_div_is_always_1:
+            module_args_cls = module_args.copy()
+            module_args_cls['node_hidden_dim'] = args.hidden_dim
+            module_args_cls['edge_hidden_dim_2'] = args.hidden_dim
+        else: module_args_cls = module_args
+
         if class_token:
             self.cls_token = nn.Parameter(torch.zeros(1, 1, args.past_length, len(args.inputs)))
         
@@ -124,21 +130,21 @@ class MART(nn.Module):
         
         for i in range(args.num_layers):
             if i == 0:
-                self.pair_encoders.append(RT(**module_args, class_token_moe=False))
+                self.pair_encoders.append(RT(**module_args, class_token_moe=class_token_all_layers))
             elif i == 1:
-                self.pair_encoders.append(RTNoEdgeInit(**module_args, class_token_moe=False))
+                self.pair_encoders.append(RTNoEdgeInit(**module_args, class_token_moe=class_token_all_layers))
             else:
-                self.pair_encoders.append(RTNoEdgeInit(**module_args, class_token_moe=class_token))
+                self.pair_encoders.append(RTNoEdgeInit(**module_args_cls, class_token_moe=class_token))
         
         module_args['function_type'] = args.function_type
         
         for i in range(args.num_layers):
             if i == 0:
-                self.hyper_encoders.append(HRT(**module_args, class_token_moe=False))
+                self.hyper_encoders.append(HRT(**module_args, class_token_moe=class_token_all_layers))
             elif i == 1:
-                self.hyper_encoders.append(HRTNoEdgeInit(**module_args, class_token_moe=False))
+                self.hyper_encoders.append(HRTNoEdgeInit(**module_args, class_token_moe=class_token_all_layers))
             else:
-                self.hyper_encoders.append(HRTNoEdgeInit(**module_args, class_token_moe=class_token))
+                self.hyper_encoders.append(HRTNoEdgeInit(**module_args_cls, class_token_moe=class_token))
         
         for i in range(args.sample_k):
             self.add_module("head_%d" % i, Decoder(args))

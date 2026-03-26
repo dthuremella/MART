@@ -18,7 +18,7 @@ import time
 from deepspeed.profiling.flops_profiler import FlopsProfiler
 import torch.cuda.nvtx as nvtx
 
-measure_nvtx = False
+measure_nvtx = False #set to false or 2
 
 def main():
     if args.seed >= 0:
@@ -148,6 +148,9 @@ def train(epoch, model, optimizer, loader):
 
 def test(epoch, model, loader, prof=None):
     model.eval()
+    # for name, m in model.named_modules():
+    #     if 'linear_net' in name:
+    #         print(name, type(m).__name__)
     avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
     if viz:
         import pickle
@@ -156,6 +159,7 @@ def test(epoch, model, loader, prof=None):
             scores[score_type] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
         xs, ys, ypreds = [], [], []
 
+    global measure_nvtx
     t0 = time.time()
     if prof: prof.start_profile()
     if measure_nvtx: nvtx.range_push("forward")    # start measuring
@@ -170,12 +174,24 @@ def test(epoch, model, loader, prof=None):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
+            if measure_nvtx:
+                if measure_nvtx == 1:
+                    torch.cuda.synchronize()
+                    nvtx.range_push("forward")
+
             y_pred, _, score = model(x_abs, x_rel)
+
+            if measure_nvtx:
+                if measure_nvtx == 1:
+                    torch.cuda.synchronize()
+                    nvtx.range_pop()
+                    break
+                measure_nvtx -= 1
 
             if viz:
                 for score_type in ['gate_score', 'top_k_idx']:
                     for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
-                        if scores[score_type][score_subtype] is None: continue
+                        if score[score_type][score_subtype][0] is None: continue
                         scores[score_type][score_subtype].append(torch.stack(score[score_type][score_subtype]))
                 xs.append(x_abs)
                 ys.append(y)
@@ -208,15 +224,17 @@ def test(epoch, model, loader, prof=None):
             avg_meter['fde_4'] += fde_4
             
             avg_meter['counter'] += (num_agents * batch_size)
-    t1 = time.time()
-    if prof: prof.stop_profile()
-    if measure_nvtx: nvtx.range_pop()     # stop measuring
-    print('INFO: Time taken for inference is :', t1 - t0)
-    print('INFO: FLOPs for inference is :', prof.get_total_flops())
+            # break #debugging
+    # import sys; sys.exit(0) #debugging
+    t1 = time.time(); print('INFO: Time taken for inference is :', t1 - t0)
+    if prof: prof.stop_profile(); print('INFO: FLOPs for inference is :', prof.get_total_flops())
+    if measure_nvtx: 
+        nvtx.range_pop(); import sys; sys.exit(0) # stop measuring
 
-    if viz:
+    if viz and not measure_nvtx:
         for score_type in ['gate_score', 'top_k_idx']:
             for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
+                if len(scores[score_type][score_subtype]) == 0: continue
                 scores[score_type][score_subtype] = torch.cat(scores[score_type][score_subtype], dim=1).cpu()
         xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
         data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}

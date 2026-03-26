@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fmoe.transformer import FMoETransformerMLP
-from utils import moe_e, moe_n, even_harmonic, viz
-from utils import moe_transformer_mlp, moe_gate
+from utils import moe_e, moe_n, even_harmonic, viz, class_token
+from utils import moe_transformer_mlp, moe_gate, moe_transformer_mlp_noncls, moe_gate_noncls
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -207,8 +207,12 @@ class RTTransformerLayer(nn.Module):
         self.attention_layer = RTAttentionLayer(num_heads, node_dim, edge_dim)
         
         self.dropout = nn.Dropout(dropout)
+        self.noncls = (moe_transformer_mlp_noncls is not None) and (not class_token_moe) # class token, 1st 2 layers
         if moe_n:
-            if even_harmonic:
+            if self.noncls:
+                self.linear_net_n = moe_transformer_mlp_noncls(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate_noncls,
+                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+            elif even_harmonic:
                 self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
                     num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
             else:
@@ -233,7 +237,10 @@ class RTTransformerLayer(nn.Module):
                 nn.Linear(edge_hidden_dim_1, edge_dim),
             )
             if moe_e:
-                if even_harmonic:
+                if self.noncls:
+                    self.linear_net2_e = moe_transformer_mlp_noncls(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate_noncls,
+                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+                elif even_harmonic:
                     self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
                     num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
                 else:
@@ -257,10 +264,11 @@ class RTTransformerLayer(nn.Module):
         node_features = node_features + self.dropout(attn_out)
         node_features = self.norm1_n(node_features)
         
+        harmonic_mlp = even_harmonic and not self.noncls
         ret = {}
         scores = {}
         avg_expert_idx = 0
-        linear_out = self.linear_net_n(node_features, ret) if moe_n and (even_harmonic or viz) else self.linear_net_n(node_features)
+        linear_out = self.linear_net_n(node_features, ret) if moe_n and (harmonic_mlp or viz) else self.linear_net_n(node_features)
         avg_expert_idx += ret.get("avg_expert_idx", 0)
         if viz:
             scores['gate_score_n'] = ret.get("gate_score", None)
@@ -284,7 +292,7 @@ class RTTransformerLayer(nn.Module):
             edge_features = edge_features + self.dropout(self.linear_net1_e(concatenated_inputs))
             edge_features = self.norm1_e(edge_features)
             
-            if moe_e and (even_harmonic or viz): edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features, ret))
+            if moe_e and (harmonic_mlp or viz): edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features, ret))
             else: edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
             avg_expert_idx += ret.get("avg_expert_idx", 0)
             if viz:
