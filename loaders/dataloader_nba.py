@@ -3,7 +3,9 @@ import numpy as np
 
 from torch.utils.data import Dataset
 
-attribute_dataset = True
+### kalman does not work with attribute dataset - it's either/or
+attribute_dataset = False
+use_kalman = False
 
 class NBADataset(Dataset):
     """Dataloder for the Trajectory datasets"""
@@ -22,29 +24,38 @@ class NBADataset(Dataset):
                 data_root_ball = './datasets/nba/trainset_ball_xy.pkl.npy'
             else:
                 data_root = './datasets/nba/nba_train.npy'
+            if use_kalman:
+                data_root_kalman = './datasets/nba/nba_train_kalman.npy'
         else:
             if attribute_dataset:
                 data_root_players = './datasets/nba/testset_players_xy.pkl.npy'
                 data_root_ball = './datasets/nba/testset_ball_xy.pkl.npy'
             else:
                 data_root = './datasets/nba/nba_test.npy'
+            if use_kalman:
+                data_root_kalman = './datasets/nba/nba_test_kalman.npy'
 
         if attribute_dataset:
             self.trajs = (np.load(data_root_players), np.load(data_root_ball))
             self.trajs = np.concatenate(self.trajs, axis=-2)  # Concatenate 
         else:
             self.trajs = np.load(data_root) 
+        if use_kalman:
+            self.kalman_score = np.load(data_root_kalman) # (40000, 11)
         self.trajs /= (94/28) # Turn to meters
 
         if mode == 'train':
             self.trajs = self.trajs[:32500]
+            if use_kalman: self.kalman_score = self.kalman_score[:32500]
         elif mode == 'val':
             self.trajs = self.trajs[32500:37500]
+            if use_kalman: self.kalman_score = self.kalman_score[32500:37500]
         else:
             self.trajs = self.trajs[:12500]
+            if use_kalman: self.kalman_score = self.kalman_score[:12500]
 
         self.traj_abs = torch.from_numpy(self.trajs).type(torch.float)
-        self.traj_abs = self.traj_abs.permute(0, 2, 1, 3)
+        self.traj_abs = self.traj_abs.permute(0, 2, 1, 3)  #[N, 11, 30, 2]
 
     def __len__(self):
         return len(self.traj_abs)
@@ -53,5 +64,8 @@ class NBADataset(Dataset):
         past_traj = self.traj_abs[index, :, :self.obs_len, :]
         future_traj = self.traj_abs[index, :, self.obs_len:, :]
         out = [past_traj, future_traj]
+        if use_kalman:
+            kalman_difficulty = self.kalman_score[index, :]
+            out.append(kalman_difficulty)
         
         return out

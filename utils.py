@@ -16,14 +16,48 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-viz = True
+viz = False
 
-moe_e = True
-moe_n = True
-even_harmonic = False
+#### MoE args ####
+moe_e = False
+moe_n = False
+NUM_EXPERTS = 24
+TOPK = 1
+SHARED = 0
+
+two_layer_router = False # only impl for harmonic
+
+#### Class token args ####
 class_token = False # only done for second two layers, need to use even_harmonic for cls layers currently (don't turn on without even_harmonic)
 class_token_all_layers = False
 class_token_harmonic_div_is_always_1 = False
+
+#### Harmonic args #####
+even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
+harmonic_bias_loss = 1000 # number (how much to weight it), or None
+# ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
+
+# force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
+# long-tail (lt) ratios means:
+# .01*10+.01*5+.03*3+.05*2+.10*1+.8*1/2+1/4
+# one shared expert, 1/4 the size
+# 4 experts with 1/2 the size for worst 80%
+# 4 experts with 1x the size for next 10%
+# 4 experts with 2x the size for next 5%
+# 4 experts with 3x the size for next 3%
+# 4 experts with 5x the size for next 1%
+# 4 experts with 10x the size for best 1%
+force_kalman = False
+ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
+targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # should sum to 1, set this to NONE if not using KL divergence loss
+# for reference: topk_intervals = [0, 1, 2, 5, 10, 100] # means the first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
+percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py
+percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
+
+# didn't work:
+gumbel_off = False # if true, turns off gumbel softmax and just uses regular softmax (which is what we want for harmonic with bias loss, since we want the scores to be more stable and not have the randomness of gumbel)
+ortho = 0 # value of biasing alpha wrt avg_exp_index loss (if 0 then no bias, if >0 then bias with that value). This then gets multiplied by harmonic_bias_loss, so total alpha is ortho * harmonic_bias_loss
+
 
 _call_count = 0
 class _ExpertPrint(_Expert):
@@ -65,6 +99,16 @@ class GSoftmaxHarmonicGate(NaiveGate):
     r"""
     A gate that uses gumbel softmax to calculate the score of each expert.
     """
+    def __init__(self, d_model, num_expert, world_size, top_k=2, gate_bias=True):
+        super().__init__(d_model, num_expert, world_size, top_k, gate_bias)
+        self.tau = 1.0
+        if two_layer_router:
+            self.gate = nn.Sequential(
+                    nn.Linear(d_model, int(d_model / 2), bias = gate_bias),
+                    # nn.Dropout(dropout),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(int(d_model / 2), self.tot_expert, bias = gate_bias),
+                )
 
     def forward(self, inp, return_all_scores=False):
         r"""
@@ -77,11 +121,25 @@ class GSoftmaxHarmonicGate(NaiveGate):
         )  # [.. x top_k]
         gate_top_k_val = gate_top_k_val.view(-1, self.top_k)
 
-        gate_score = F.gumbel_softmax(gate_top_k_val, tau=1, hard=(not self.training))
+        gate_score = F.gumbel_softmax(gate_top_k_val, tau=self.tau, hard=(gumbel_off or not self.training))
 
-        # Compute average expert index weighted by scores
-        # Shape: gate_top_k_idx (batch*seq, top_k), gate_score (batch*seq, top_k)
-        avg_expert_idx = (gate_top_k_idx.float() * gate_score).sum(dim=-1).mean()
+        if targets is not None:
+            # gate_score shape: (batch*seq, top_k) -> (batch*seq, num_experts)
+            # Scatter top-k scores back into full expert dimension
+            full_scores = torch.zeros(gate_score.shape[0], NUM_EXPERTS, device=gate_score.device)
+            full_scores.scatter_(1, gate_top_k_idx, gate_score)  # (batch*seq, num_experts)
+
+            # Adjust gate_score to match target distribution
+            target_distribution = torch.tensor(targets, device=gate_score.device).float()
+            actual_dist = F.softmax(gate.view(-1, NUM_EXPERTS), dim=-1).mean(dim=0)  # (num_experts,), sums to 1
+            actual_dist = actual_dist.reshape((-1, len(ratios))).sum(dim=0)  # reshape to (experts_per_group, num_ratio_groups) and take mean of experts_per_group to get (num_ratio_groups,)
+            avg_expert_idx = F.kl_div(actual_dist.log(), target_distribution, reduction='sum')
+        else:
+            # Compute average expert index weighted by scores
+            # Shape: gate_top_k_idx (batch*seq, top_k), gate_score (batch*seq, top_k)
+            factor = NUM_EXPERTS / len(ratios)  # Number of experts per ratio group
+            ratios_based_idx = (gate_top_k_idx / factor).int() # Convert to (0, 7)
+            avg_expert_idx = (ratios_based_idx.float() * gate_score).sum(dim=-1).mean()
 
         # dummy loss
         self.set_loss(torch.zeros(1, requires_grad=True).to(inp.device))
@@ -224,7 +282,7 @@ class FMoETransformerMLPViz(FMoEViz):
         super().__init__(num_expert=num_expert, d_model=d_model, expert=expert, **kwargs)
         self.mark_parallel_comm(expert_dp_comm)
 
-    def forward(self, inp: torch.Tensor, ret={}):
+    def forward(self, inp: torch.Tensor, ret={}, kalman_score=None):
         r"""
         This module wraps up the FMoE module with reshape, residual and layer
         normalization.
@@ -288,6 +346,10 @@ class FMoEHarmonic(FMoE):
         else:
             self.experts_fused = True
 
+        if force_kalman:
+            factor =int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
+            self.gates = [gate(d_model, factor, world_size, top_k, gate_bias=gate_bias) for i in range(len(ratios))] # 4 experts per ratio
+
         if issubclass(gate, NaiveGate):
             self.gate = gate(d_model, num_expert, world_size, top_k, gate_bias=gate_bias)
         else:
@@ -321,7 +383,7 @@ class FMoEHarmonic(FMoE):
                 base_idx += batch_size
         
         return torch.cat(outputs, dim=0) if outputs else inp[:0]
-    def forward(self, moe_inp):
+    def forward(self, moe_inp, kalman_score=None):
         r"""
         The FMoE module first computes gate output, and then conduct MoE forward
         according to the gate.  The score of the selected gate given by the
@@ -354,7 +416,39 @@ class FMoEHarmonic(FMoE):
 
             moe_inp = tree.map_structure(slice_func, moe_inp)
 
-        gate_top_k_idx, gate_score, avg_expert_idx = self.gate(moe_inp)
+        if force_kalman and self.training: ########### main functionality of forcing kalman groups in training
+            gate_top_k_idx = torch.full(
+                (moe_inp.shape[0], 2), -1,
+                dtype=torch.long,          # indices should be long
+                device=moe_inp.device
+            )
+
+            gate_score = torch.full(
+                (moe_inp.shape[0], 2), -1.0,
+                dtype=moe_inp.dtype,       # match float32/float16/bfloat16
+                device=moe_inp.device
+            )
+            avg_expert_idx_list = []
+
+            for i in range(len(ratios)):
+                kalman_start = percentile_intervals[i]
+                kalman_end = percentile_intervals[i+1]
+                import pdb; pdb.set_trace() # is it and or & ???
+
+                inds = (kalman_score > kalman_start) and (kalman_score <= kalman_end)
+                moe_inp_i = moe_inp[inds]
+                gate_top_k_idx_i, gate_score_i, avg_expert_idx_i = self.gates[i](moe_inp_i)
+
+                gate_top_k_idx[inds] = gate_top_k_idx_i
+                gate_score[inds] = gate_score_i
+
+                avg_expert_idx_list.append(avg_expert_idx_i)
+            avg_expert_idx = torch.mean(avg_expert_idx_list)
+
+            # train the normal gate with this series of gates (and hack avg_expert_idx to do it)
+
+        else:
+            gate_top_k_idx, gate_score, avg_expert_idx = self.gate(moe_inp)
 
         if len(inp_shape) > 2: # done for class_token_moe
             num_tokens = inp_shape[1] if len(inp_shape) == 3 else inp_shape[1] * inp_shape[1]
@@ -468,13 +562,16 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
         **kwargs
     ):
         # Build heterogeneous expert list
-        ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
-        expert_list = [_IdentityExpert()]  # Expert 0: identity
+        expert_list = []  # Expert 0: identity
         
         # Experts 1-7: variable hidden sizes
         for ratio in ratios:
             hidden = int(d_hidden * ratio)
-            expert_list.append(_Expert(1, d_model, hidden, activation, rank=expert_rank))
+            for i in range(int(NUM_EXPERTS / len(ratios))):  # Repeat each expert type to fill up num_expert
+                if ratio == 0:  # Identity expert
+                    expert_list.append(_IdentityExpert())
+                else:
+                    expert_list.append(_Expert(1, d_model, hidden, activation, rank=expert_rank))
         
         # Pass pre-built experts directly for efficiency
         super().__init__(
@@ -487,14 +584,20 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
         self.mark_parallel_comm(expert_dp_comm)
         self.class_token_moe = class_token_moe
 
-    def forward(self, inp: torch.Tensor, ret={}):
+    def forward(self, inp: torch.Tensor, ret={}, kalman_score=None):
         original_shape = inp.shape
+        if force_kalman:
+            import pdb; pdb.set_trace() # reshape kalman_score to match input
+            if len(inp.shape) > 3:
+                kalman_score = kalman_score.unsqueeze(-1).expand(original_shape[...,0]) # expand it to make it match all but the last dimension of input
+            kalman_score = kalman_score.flatten()
+
         if not self.class_token_moe: inp = inp.reshape(-1, self.d_model)
         if viz: 
             output, avg_expert_idx, gate_score, top_k_idx = super().forward(inp)
             ret["gate_score"] = gate_score.reshape(original_shape[0], -1, 2)
             ret["top_k_idx"] = top_k_idx.reshape(original_shape[0], -1, 2)
-        else: output, avg_expert_idx = super().forward(inp)
+        else: output, avg_expert_idx = super().forward(inp, kalman_score=kalman_score)
         ret["avg_expert_idx"] = avg_expert_idx
         return output.reshape(original_shape)
 

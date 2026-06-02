@@ -105,6 +105,7 @@ class MART(nn.Module):
             'num_heads': args.num_heads,
             'node_dim': args.model_dim,
             'node_hidden_dim': int(args.hidden_dim / args.div_by),
+            'node_hidden_dim_shared': int(args.hidden_dim / args.div_by_shared),
             'edge_dim': args.model_dim,
             'edge_hidden_dim_1': args.hidden_dim,
             'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
@@ -149,7 +150,7 @@ class MART(nn.Module):
         for i in range(args.sample_k):
             self.add_module("head_%d" % i, Decoder(args))
         
-    def forward(self, x_abs, x_rel):
+    def forward(self, x_abs, x_rel, kalman_score=None):
         inputs = []
         batch_size, num_agents, length, _ = x_abs.shape
                 
@@ -182,9 +183,9 @@ class MART(nn.Module):
             scores['gate_score'] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
             scores['top_k_idx'] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
         for i in range(self.args.num_layers):
-            n_pair, e_pair, avg_expert_idx_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True)
-            n_group, e_group, G, avg_expert_idx_group, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True)
-            if viz:
+            n_pair, e_pair, avg_expert_idx_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True, kalman_score=kalman_score)
+            n_group, e_group, G, avg_expert_idx_group, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True, kalman_score=kalman_score)
+            if viz and (moe_n or moe_e):
                 scores['gate_score']['pair_n'].append(scores_pair['gate_score_n'])
                 scores['gate_score']['pair_e'].append(scores_pair['gate_score_e'])
                 scores['gate_score']['group_n'].append(scores_group['gate_score_n'])

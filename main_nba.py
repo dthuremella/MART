@@ -6,19 +6,53 @@ from csv import writer
 
 import torch
 import numpy as np
+import pickle
 
 from torch import optim
 from torch.optim import lr_scheduler
 
 from utils import *
 from models.mart import MART, viz
-from loaders.dataloader_nba import NBADataset, attribute_dataset
+from loaders.dataloader_nba import NBADataset, attribute_dataset, use_kalman
 from fmoe.megatron import fmoefy
 import time
 from deepspeed.profiling.flops_profiler import FlopsProfiler
 import torch.cuda.nvtx as nvtx
 
-measure_nvtx = False #set to false or 2
+measure_nvtx = False 
+
+measure_flops = False
+def register_flop_hooks(model):
+    def count_expert_flops(module, input, output):
+        inp = input[0]
+        tokens = inp.shape[0]
+        d_model = inp.shape[1]
+        d_hidden = module.htoh4.out_feat
+        flops = 2 * tokens * (d_model * d_hidden + d_hidden * d_model)
+        module._flop_count += flops
+
+    def count_linear_flops(module, input, output):
+        inp = input[0]
+        tokens = inp.numel() // inp.shape[-1]
+        flops = 2 * tokens * inp.shape[-1] * output.shape[-1]
+        module._flop_count += flops
+
+    for name, module in model.named_modules():
+        if type(module).__name__ in ('_Expert', '_ExpertPrint'):
+            module._flop_count = 0
+            module.register_forward_hook(count_expert_flops)
+        elif type(module) == torch.nn.Linear:
+            module._flop_count = 0
+            module.register_forward_hook(count_linear_flops)
+
+def print_flops(model):
+    total_flops = sum(m._flop_count for m in model.modules() if hasattr(m, '_flop_count'))
+    print(f"\n=== FLOPs Report ===")
+    print(f"Total FLOPs: {total_flops:.3e}")
+    print("\nPer module breakdown:")
+    for name, module in model.named_modules():
+        if hasattr(module, '_flop_count') and module._flop_count > 0:
+            print(f"  {name}: {module._flop_count:.3e}")
 
 def main():
     if args.seed >= 0:
@@ -40,6 +74,8 @@ def main():
     # model = fmoefy(model, fmoe_num_experts=8)
     # print(model)
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
+    if measure_flops:
+        register_flop_hooks(model)
 
     optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=1e-12)
 
@@ -110,8 +146,16 @@ def train(epoch, model, optimizer, loader):
     for i, data in enumerate(loader):
         optimizer.zero_grad()
         
-        x_abs, y = data
-        x_abs, y = x_abs.cuda(), y.cuda()        
+        kalman_score = None
+        if use_kalman:
+            x_abs, y, kalman = data
+            x_abs, y, kalman = x_abs.cuda(), y.cuda(), kalman.cuda()
+            if force_kalman: 
+                kalman_score = kalman   
+                import pdb; pdb.set_trace() # measure the size of kalman_score to make sure its right 
+        else:
+            x_abs, y = data
+            x_abs, y = x_abs.cuda(), y.cuda()        
         
         batch_size, num_agents, length, _ = x_abs.size()
 
@@ -119,7 +163,7 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred, avg_expert_idx, _ = model(x_abs, x_rel)
+        y_pred, avg_expert_idx, _ = model(x_abs, x_rel, kalman_score=kalman_score)
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -128,8 +172,8 @@ def train(epoch, model, optimizer, loader):
         y = y[:, :, None, :, :]
         
         total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
-        expert_bias_alpha = 1
-        total_loss += expert_bias_alpha * avg_expert_idx
+        if harmonic_bias_loss is not None:
+            total_loss += harmonic_bias_loss * avg_expert_idx
 
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
@@ -153,7 +197,6 @@ def test(epoch, model, loader, prof=None):
     #         print(name, type(m).__name__)
     avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
     if viz:
-        import pickle
         scores = {}
         for score_type in ['gate_score', 'top_k_idx']:
             scores[score_type] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
@@ -162,11 +205,17 @@ def test(epoch, model, loader, prof=None):
     global measure_nvtx
     t0 = time.time()
     if prof: prof.start_profile()
-    if measure_nvtx: nvtx.range_push("forward")    # start measuring
+    # if measure_nvtx: nvtx.range_push("forward")    # start measuring
     with torch.no_grad():
+        batch_count = 0
         for _, data in enumerate(loader):
-            x_abs, y = data
-            x_abs, y = x_abs.cuda(), y.cuda()        
+            batch_count += 1
+            if use_kalman:
+                x_abs, y, kalman = data
+                x_abs, y, kalman = x_abs.cuda(), y.cuda(), kalman.cuda()      
+            else:
+                x_abs, y = data
+                x_abs, y = x_abs.cuda(), y.cuda()       
             
             batch_size, num_agents, length, _ = x_abs.size()
 
@@ -174,25 +223,28 @@ def test(epoch, model, loader, prof=None):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            if measure_nvtx:
-                if measure_nvtx == 1:
+            if batch_count == 2:
+                if measure_nvtx:
                     torch.cuda.synchronize()
                     nvtx.range_push("forward")
 
             y_pred, _, score = model(x_abs, x_rel)
 
-            if measure_nvtx:
-                if measure_nvtx == 1:
+            if batch_count == 2:
+                if measure_nvtx:
                     torch.cuda.synchronize()
                     nvtx.range_pop()
                     break
-                measure_nvtx -= 1
+                if measure_flops:
+                    print_flops(model)
+                    import sys; sys.exit(0)
 
             if viz:
-                for score_type in ['gate_score', 'top_k_idx']:
-                    for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
-                        if score[score_type][score_subtype][0] is None: continue
-                        scores[score_type][score_subtype].append(torch.stack(score[score_type][score_subtype]))
+                if moe_e or moe_n:
+                    for score_type in ['gate_score', 'top_k_idx']:
+                        for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
+                            if score[score_type][score_subtype][0] is None: continue
+                            scores[score_type][score_subtype].append(torch.stack(score[score_type][score_subtype]))
                 xs.append(x_abs)
                 ys.append(y)
                 ypreds.append(y_pred)
@@ -232,10 +284,11 @@ def test(epoch, model, loader, prof=None):
         nvtx.range_pop(); import sys; sys.exit(0) # stop measuring
 
     if viz and not measure_nvtx:
-        for score_type in ['gate_score', 'top_k_idx']:
-            for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
-                if len(scores[score_type][score_subtype]) == 0: continue
-                scores[score_type][score_subtype] = torch.cat(scores[score_type][score_subtype], dim=1).cpu()
+        if moe_e or moe_n:
+            for score_type in ['gate_score', 'top_k_idx']:
+                for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
+                    if len(scores[score_type][score_subtype]) == 0: continue
+                    scores[score_type][score_subtype] = torch.cat(scores[score_type][score_subtype], dim=1).cpu()
         xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
         data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
         pickle.dump(data_dump, open('viz_scores_nba_{}{}.pkl'.format(args.tag, 'attr' if attribute_dataset else ''), 'wb'))
