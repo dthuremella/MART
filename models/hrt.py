@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fmoe.transformer import FMoETransformerMLP
-from utils import moe_e, moe_n, even_harmonic, viz, class_token
+from utils import moe_e, moe_n, even_harmonic, viz, class_token, TOPK, shared, sharedratio, NUMEXPERTS
 from utils import moe_transformer_mlp, moe_gate, moe_transformer_mlp_noncls, moe_gate_noncls
 
 
@@ -147,6 +147,7 @@ class HRT(nn.Module):
             edge_hidden_dim_1: int = 128,
             edge_hidden_dim_2: int = 128,
             dropout: float = 0.0,
+            shared_hidden_dim: int = 128,
             aggregation: str = 'avg',
             scale: int = 2,
             function_type: int = 1,
@@ -162,6 +163,7 @@ class HRT(nn.Module):
             edge_hidden_dim_1,
             edge_hidden_dim_2,
             dropout,
+            shared_hidden_dim,
             aggregation,
             class_token_moe
         )
@@ -247,6 +249,7 @@ class HRTNoEdgeInit(nn.Module):
             edge_hidden_dim_1: int = 128,
             edge_hidden_dim_2: int = 128,
             dropout: float = 0.0,
+            shared_hidden_dim: int = 128,
             aggregation: str = 'avg',
             scale: int = 2,
             function_type: int = 1,
@@ -261,6 +264,7 @@ class HRTNoEdgeInit(nn.Module):
             edge_hidden_dim_1,
             edge_hidden_dim_2,
             dropout,
+            shared_hidden_dim,
             aggregation,
             class_token_moe
         )
@@ -288,6 +292,7 @@ class HRTTransformerLayer(nn.Module):
         edge_hidden_dim_1: int = 128,
         edge_hidden_dim_2: int = 128,
         dropout: float = 0.0,
+        shared_hidden_dim: int = 128,
         aggregation: str = 'avg',
         class_token_moe: bool = False
     ):
@@ -302,13 +307,13 @@ class HRTTransformerLayer(nn.Module):
         if moe_n:
             if self.noncls:
                 self.linear_net_n = moe_transformer_mlp_noncls(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate_noncls,
-                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+                    num_expert=NUMEXPERTS, top_k=TOPK, activation=torch.nn.ReLU(inplace=True))
             elif even_harmonic:
                 self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
-                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
+                    num_expert=NUMEXPERTS, top_k=TOPK, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
             else:
                 self.linear_net_n = moe_transformer_mlp(d_model=node_dim, d_hidden=node_hidden_dim, gate=moe_gate,
-                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+                    num_expert=NUMEXPERTS, top_k=TOPK, activation=torch.nn.ReLU(inplace=True))
         else:
             self.linear_net_n = nn.Sequential(
                 nn.Linear(node_dim, node_hidden_dim),
@@ -316,7 +321,14 @@ class HRTTransformerLayer(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(node_hidden_dim, node_dim),
             )
-
+        if shared:
+            self.linear_net_n_shared = nn.Sequential(
+                    nn.Linear(node_dim, shared_hidden_dim),
+                    # nn.Dropout(dropout),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(shared_hidden_dim, node_dim),
+                )
+    
         self.norm1_n = nn.LayerNorm(node_dim)
         self.norm2_n = nn.LayerNorm(node_dim)
         
@@ -331,19 +343,26 @@ class HRTTransformerLayer(nn.Module):
             if moe_e:
                 if self.noncls:
                     self.linear_net2_e = moe_transformer_mlp_noncls(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate_noncls,
-                    num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+                    num_expert=NUMEXPERTS, top_k=TOPK, activation=torch.nn.ReLU(inplace=True))
                 elif even_harmonic:
                     self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
-                        num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
+                        num_expert=NUMEXPERTS, top_k=TOPK, activation=torch.nn.ReLU(inplace=True), class_token_moe=class_token_moe)
                 else:
                     self.linear_net2_e = moe_transformer_mlp(d_model=edge_dim, d_hidden=edge_hidden_dim_2, gate=moe_gate,
-                        num_expert=8, top_k=2, activation=torch.nn.ReLU(inplace=True))
+                        num_expert=NUMEXPERTS, top_k=TOPK, activation=torch.nn.ReLU(inplace=True))
             else:
                 self.linear_net2_e = nn.Sequential(
                     nn.Linear(edge_dim, edge_hidden_dim_2),
                     # nn.Dropout(dropout),
                     nn.ReLU(inplace=True),
                     nn.Linear(edge_hidden_dim_2, edge_dim),
+                )
+            if shared:
+                self.linear_net2_e_shared = nn.Sequential(
+                    nn.Linear(edge_dim, shared_hidden_dim),
+                    # nn.Dropout(dropout),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(shared_hidden_dim, edge_dim),
                 )
 
             self.norm1_e = nn.LayerNorm(edge_dim)
@@ -359,6 +378,8 @@ class HRTTransformerLayer(nn.Module):
         avg_expert_idx = 0
         scores = {}
         linear_out = self.linear_net_n(node_features, ret) if moe_n and (harmonic_mlp or viz) else self.linear_net_n(node_features)
+        if shared:
+            linear_out = (1-sharedratio) * linear_out + sharedratio * self.linear_net_n_shared(node_features)
         avg_expert_idx += ret.get("avg_expert_idx", 0)
         if viz:
             scores['gate_score_n'] = ret.get("gate_score", None)
@@ -379,8 +400,14 @@ class HRTTransformerLayer(nn.Module):
             edge_features = edge_features + self.dropout(self.linear_net1_e(concatenated_inputs))
             edge_features = self.norm1_e(edge_features)
 
-            if moe_e and (harmonic_mlp or viz): edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features, ret))
-            else: edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
+            if shared:
+                if moe_e and (harmonic_mlp or viz): edge_features = edge_features + self.dropout(
+                    ((1-sharedratio) * self.linear_net2_e(edge_features, ret) + sharedratio * self.linear_net2_e_shared(edge_features)))
+                else: edge_features = edge_features + self.dropout(
+                    ((1-sharedratio) * self.linear_net2_e(edge_features) + sharedratio * self.linear_net2_e_shared(edge_features)))
+            else:
+                if moe_e and (harmonic_mlp or viz): edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features, ret))
+                else: edge_features = edge_features + self.dropout(self.linear_net2_e(edge_features))
             avg_expert_idx += ret.get("avg_expert_idx", 0)
             if viz:
                 scores['gate_score_e'] = ret.get("gate_score", None)

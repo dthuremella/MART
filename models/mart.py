@@ -109,6 +109,7 @@ class MART(nn.Module):
             'edge_hidden_dim_1': args.hidden_dim,
             'edge_hidden_dim_2': int(args.hidden_dim / args.div_by),
             'dropout': args.dropout,
+            'shared_hidden_dim': int(args.hidden_dim / args.div_by_shared),
         }
         if class_token and class_token_harmonic_div_is_always_1:
             module_args_cls = module_args.copy()

@@ -16,14 +16,24 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-viz = True
+viz = False
+attribute_dataset = False
 
 moe_e = True
 moe_n = True
-even_harmonic = False
+
+even_harmonic = True
+
 class_token = False # only done for second two layers, need to use even_harmonic for cls layers currently (don't turn on without even_harmonic)
 class_token_all_layers = False
 class_token_harmonic_div_is_always_1 = False
+
+two_layer_router = False
+
+TOPK = 1
+shared = True
+sharedratio = 0.5
+NUMEXPERTS = 128
 
 _call_count = 0
 class _ExpertPrint(_Expert):
@@ -40,6 +50,15 @@ class GSoftmaxGate(NaiveGate):
     r"""
     A gate that uses gumbel softmax to calculate the score of each expert.
     """
+    def __init__(self, d_model, num_expert, world_size, top_k=2, gate_bias=True):
+        super().__init__(d_model, num_expert, world_size, top_k, gate_bias)
+        if two_layer_router:
+            self.gate = nn.Sequential(
+                    nn.Linear(d_model, int(d_model / 2), bias = gate_bias),
+                    # nn.Dropout(dropout),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(int(d_model / 2), self.tot_expert, bias = gate_bias),
+                )
 
     def forward(self, inp, return_all_scores=False):
         r"""
@@ -65,6 +84,15 @@ class GSoftmaxHarmonicGate(NaiveGate):
     r"""
     A gate that uses gumbel softmax to calculate the score of each expert.
     """
+    def __init__(self, d_model, num_expert, world_size, top_k=2, gate_bias=True):
+        super().__init__(d_model, num_expert, world_size, top_k, gate_bias)
+        if two_layer_router:
+            self.gate = nn.Sequential(
+                    nn.Linear(d_model, int(d_model / 2), bias = gate_bias),
+                    # nn.Dropout(dropout),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(int(d_model / 2), self.tot_expert, bias = gate_bias),
+                )
 
     def forward(self, inp, return_all_scores=False):
         r"""
@@ -232,8 +260,8 @@ class FMoETransformerMLPViz(FMoEViz):
         original_shape = inp.shape
         inp = inp.reshape(-1, self.d_model)
         output, gate_score, top_k_idx = super().forward(inp)
-        ret['gate_score'] = gate_score.reshape(original_shape[0], -1, 2)
-        ret['top_k_idx'] = top_k_idx.reshape(original_shape[0], -1, 2)
+        ret['gate_score'] = gate_score.reshape(original_shape[0], -1, TOPK)
+        ret['top_k_idx'] = top_k_idx.reshape(original_shape[0], -1, TOPK)
         return output.reshape(original_shape)
 
 class FMoEHarmonic(FMoE):
@@ -468,13 +496,17 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
         **kwargs
     ):
         # Build heterogeneous expert list
-        ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
-        expert_list = [_IdentityExpert()]  # Expert 0: identity
+        ratios = [0, 1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
+        expert_list = []  # Expert 0: identity
         
         # Experts 1-7: variable hidden sizes
         for ratio in ratios:
             hidden = int(d_hidden * ratio)
-            expert_list.append(_Expert(1, d_model, hidden, activation, rank=expert_rank))
+            for i in range(int(NUMEXPERTS / len(ratios))):  # Repeat each expert type to fill up num_expert
+                if ratio == 0:  # Identity expert
+                    expert_list.append(_IdentityExpert())
+                else:
+                    expert_list.append(_Expert(1, d_model, hidden, activation, rank=expert_rank))
         
         # Pass pre-built experts directly for efficiency
         super().__init__(
@@ -515,6 +547,69 @@ def load_config(config_path):
 def get_th(opts, model):
     th = round(model.hyper_encoders[0].group_gen.th.item(), 4)
     return th    
+
+def get_heading(trajectory):
+    # trajectory has shape (Time X (x,y))
+    dx_ = np.diff(trajectory[:, 0])
+    dy_ = np.diff(trajectory[:, 1])
+    heading = np.arctan2(dy_, dx_)
+    return heading
+class TrajectoryType:
+    STATIONARY = 0
+    STRAIGHT = 1
+    STRAIGHT_RIGHT = 2
+    STRAIGHT_LEFT = 3
+    RIGHT_U_TURN = 4
+    RIGHT_TURN = 5
+    LEFT_U_TURN = 6
+    LEFT_TURN = 7
+
+def classify_track(trajectory):
+    # The classification strategy is taken from
+    # waymo_open_dataset/metrics/motion_metrics_utils.cc#L28
+
+    # Parameters for classification, taken from WOD
+    kMaxSpeedForStationary = 2.0  # (m/s)
+    kMaxDisplacementForStationary = 5.0  # (m)
+    kMaxLateralDisplacementForStraight = 5.0  # (m)
+    kMinLongitudinalDisplacementForUTurn = -5.0  # (m)
+    kMaxAbsHeadingDiffForStraight = np.pi / 6.0  # (rad)
+    heading = get_heading(trajectory)
+    diff = trajectory[1:] - trajectory[:-1]
+    start_heading = heading[0]
+    end_heading = heading[-1]
+    start_point = trajectory[0]
+    end_point = trajectory[-1]
+    start_velocity = diff[0]
+    end_velocity = diff[-1]
+
+    x_delta = end_point[0] - start_point[0]
+    y_delta = end_point[1] - start_point[1]
+
+    final_displacement = np.hypot(x_delta, y_delta)
+    heading_diff = end_heading - start_heading
+    normalized_delta = np.array([x_delta, y_delta])
+    rotation_matrix = np.array([[np.cos(-start_heading), -np.sin(-start_heading)],
+                                [np.sin(-start_heading), np.cos(-start_heading)]])
+    normalized_delta = np.dot(rotation_matrix, normalized_delta)
+    start_speed = np.hypot(start_velocity[0], start_velocity[1])
+    end_speed = np.hypot(end_velocity[0], end_velocity[1])
+    max_speed = max(start_speed, end_speed)
+    dx, dy = normalized_delta
+
+    # Check for different trajectory types based on the computed parameters.
+    if max_speed < kMaxSpeedForStationary and final_displacement < kMaxDisplacementForStationary:
+        return TrajectoryType.STATIONARY
+    if np.abs(heading_diff) < kMaxAbsHeadingDiffForStraight:
+        if np.abs(normalized_delta[1]) < kMaxLateralDisplacementForStraight:
+            return TrajectoryType.STRAIGHT
+        return TrajectoryType.STRAIGHT_RIGHT if dy < 0 else TrajectoryType.STRAIGHT_LEFT
+    if heading_diff < -kMaxAbsHeadingDiffForStraight and dy < 0:
+        return TrajectoryType.RIGHT_U_TURN if normalized_delta[
+                                                  0] < kMinLongitudinalDisplacementForUTurn else TrajectoryType.RIGHT_TURN
+    if dx < kMinLongitudinalDisplacementForUTurn:
+        return TrajectoryType.LEFT_U_TURN
+    return TrajectoryType.LEFT_TURN
 
 
 if viz:

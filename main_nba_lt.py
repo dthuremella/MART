@@ -11,15 +11,17 @@ from torch import optim
 from torch.optim import lr_scheduler
 
 from utils import *
-from models.mart import MART, viz
-from loaders.dataloader_nba import NBADataset, attribute_dataset
-from fmoe.megatron import fmoefy
-import time
-# from deepspeed.profiling.flops_profiler import FlopsProfiler
-import torch.cuda.nvtx as nvtx
+from models.mart import MART
+from loaders.dataloader_nba import NBADataset
 
-measure_nvtx = False #set to false or 2
-trajectory_type_eval = False
+import pickle
+
+def kalman(x_abs, x_rel):
+    pred = []
+    for row in x_abs.reshape(x_abs.shape[0] * x_abs.shape[1], -1, 2):
+        pred_i = estimate_kalman_filter(row, prediction_horizon=opts.future_length)
+        pred.append(pred_i)
+    return torch.tensor(np.array(pred)).reshape(x_abs.shape[0], x_abs.shape[1], 2)
 
 def main():
     if args.seed >= 0:
@@ -38,8 +40,7 @@ def main():
     loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, shuffle=False, num_workers=8)
 
     model = MART(opts).cuda()
-    # model = fmoefy(model, fmoe_num_experts=8)
-    # print(model)
+    print(model)
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
 
     optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=1e-12)
@@ -49,7 +50,7 @@ def main():
     elif opts.scheduler_type == 'MultiStepLR':
         scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=opts.milestones, gamma=opts.decay_gamma)
 
-    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0] + args.tag) 
+    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0])
     os.makedirs(model_save_dir, exist_ok=True)
 
     if args.test:
@@ -58,25 +59,27 @@ def main():
         print('[INFO] Loading model from:', model_path)
         model_ckpt = torch.load(model_path)
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
-        prof = None #FlopsProfiler(model) # flops
-        ade, fde = test(model_ckpt['epoch'], model, loader_test, prof)
+        ade, fde = test(model_ckpt['epoch'], model, loader_test)
         os.makedirs('results', exist_ok=True)
         with open(os.path.join('./results', '{}_result.csv'.format(args.dataset)), 'w', newline='') as f:
             csv_writer = writer(f)
             csv_writer.writerow([os.path.basename(args.config).split('.')[0], ade, fde])
         exit()
 
-    results = {'epochs': [], 'losses': []}
+    results = {'epochs': [], 'test_losses': [], 'test_ades': [], 'train_losses': []}
     best_val_loss = 1e8
     best_ade = 1e8
     best_epoch = 0
     print('[INFO] The seed is :',seed)
     
     for epoch in range(0, opts.num_epochs):
-        train(epoch, model, optimizer, loader_train)
+        train_loss = train(epoch, model, optimizer, loader_train)
         test_loss, ade = test(epoch, model, loader_test)
         results['epochs'].append(epoch)
-        results['losses'].append(test_loss)
+        results['test_losses'].append(test_loss)
+        results['test_ades'].append(ade)
+        results['train_losses'].append(train_loss)
+        pickle.dump(results, open('nba_results.pkl', 'wb'))
 
         state = {
             'epoch': epoch,
@@ -120,7 +123,7 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        y_pred, avg_expert_idx, _ = model(x_abs, x_rel)
+        y_pred = model(x_abs, x_rel)
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -129,10 +132,7 @@ def train(epoch, model, optimizer, loader):
         y = y[:, :, None, :, :]
         
         total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
-        if even_harmonic:
-            expert_bias_alpha = 1 / float(opts.div_by)
-            total_loss += expert_bias_alpha * avg_expert_idx
-
+        
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
         
@@ -148,25 +148,12 @@ def train(epoch, model, optimizer, loader):
     return avg_meter['loss'] / avg_meter['counter']
 
 
-def test(epoch, model, loader, prof=None):
+def test(epoch, model, loader):
     model.eval()
-    # for name, m in model.named_modules():
-    #     if 'linear_net' in name:
-    #         print(name, type(m).__name__)
     avg_meter = {'epoch': epoch, 'ade_1': 0, 'ade_2': 0, 'ade_3': 0, 'ade_4': 0, 'fde_1': 0, 'fde_2': 0, 'fde_3': 0, 'fde_4': 0, 'counter': 0}
-    if viz:
-        import pickle
-        scores = {}
-        for score_type in ['gate_score', 'top_k_idx']:
-            scores[score_type] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
-        xs, ys, ypreds = [], [], []
-    if trajectory_type_eval:
-        xs, ys, ade4s, fde4s = [], [], [], []
-    global measure_nvtx
-    t0 = time.time()
-    if prof: prof.start_profile()
-    if measure_nvtx: nvtx.range_push("forward")    # start measuring
+    
     with torch.no_grad():
+        xs, ys, ypreds = [], [], []
         for _, data in enumerate(loader):
             x_abs, y = data
             x_abs, y = x_abs.cuda(), y.cuda()        
@@ -177,33 +164,15 @@ def test(epoch, model, loader, prof=None):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
             
-            if measure_nvtx:
-                if measure_nvtx == 1:
-                    torch.cuda.synchronize()
-                    nvtx.range_push("forward")
-
-            y_pred, _, score = model(x_abs, x_rel)
-
-            if measure_nvtx:
-                if measure_nvtx == 1:
-                    torch.cuda.synchronize()
-                    nvtx.range_pop()
-                    break
-                measure_nvtx -= 1
-
-            if viz:
-                for score_type in ['gate_score', 'top_k_idx']:
-                    for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
-                        if score[score_type][score_subtype][0] is None: continue
-                        scores[score_type][score_subtype].append(torch.stack(score[score_type][score_subtype]))
-                ypreds.append(y_pred)
-            if viz or trajectory_type_eval:
-                xs.append(x_abs)
-                ys.append(y)
+            y_pred, score = model(x_abs, x_rel)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
                 y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
+
+            xs.append(x_abs)
+            ys.append(y)
+            ypreds.append(y_pred)
 
             y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
             y = np.array(y.cpu()) # B, N, T, 2
@@ -226,30 +195,10 @@ def test(epoch, model, loader, prof=None):
             avg_meter['fde_3'] += fde_3
             avg_meter['ade_4'] += ade_4
             avg_meter['fde_4'] += fde_4
-
-            if trajectory_type_eval:
-                ade4s.append(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2))
-                fde4s.append(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2))
-
+            
             avg_meter['counter'] += (num_agents * batch_size)
-            # break #debugging
-    # import sys; sys.exit(0) #debugging
-    t1 = time.time(); print('INFO: Time taken for inference is :', t1 - t0)
-    if prof: 
-        prof.stop_profile(); 
-        print('INFO: FLOPs for inference is :', prof.get_total_flops())
-    if measure_nvtx: 
-        nvtx.range_pop(); import sys; sys.exit(0) # stop measuring
-
-    if viz and not measure_nvtx:
-        for score_type in ['gate_score', 'top_k_idx']:
-            for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
-                if len(scores[score_type][score_subtype]) == 0: continue
-                scores[score_type][score_subtype] = torch.cat(scores[score_type][score_subtype], dim=1).cpu()
-        xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
-        data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
-        pickle.dump(data_dump, open('viz_scores_nba_{}{}.pkl'.format(args.tag, 'attr' if attribute_dataset else ''), 'wb'))
-
+    
+    xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
 
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
@@ -257,21 +206,47 @@ def test(epoch, model, loader, prof=None):
     print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_2'] / avg_meter['counter'], avg_meter['fde_2'] / avg_meter['counter']))
     print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_3'] / avg_meter['counter'], avg_meter['fde_3'] / avg_meter['counter']))
     print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']))
+
+    d_baseline = pickle.load(open('viz_scores_nba_reproduce.pkl', 'rb'))
+    baseline_errs, _ = torch.min(
+        torch.norm(
+            d_baseline['ypred'][:,:,:,-1,:].flatten(0,1) - d_baseline['y'][:,:,-1,:].unsqueeze(-2).flatten(0,1),
+            dim=-1),
+        dim=-1)
+    baseline_sorted, baseline_inds = torch.sort(baseline_errs)
+
+    d_kalman = pickle.load(open('viz_scores_nba_kalman.pkl', 'rb'))
+    kalman_errs = torch.norm(
+        d_kalman['ypred'].flatten(0,1) - d_kalman['y'][:,:,-1,:].flatten(0,1),
+        dim=-1)
+    kalman_sorted, kalman_inds = torch.sort(kalman_errs)
+
+    fde_errs, _ = torch.min(
+        torch.norm(
+            ypreds[:,:,:,-1,:].flatten(0,1) - ys[:,:,-1,:].unsqueeze(-2).flatten(0,1),
+            dim=-1),
+        dim=-1)
+    ade_errs, _ = torch.min(
+        torch.mean(
+            torch.norm(
+                ypreds.flatten(0,1) - ys.unsqueeze(-3).flatten(0,1),
+                dim=-1),
+            dim=-1),
+        dim=-1)
     
-    if trajectory_type_eval:
-        ade4s, fde4s, xs, ys = np.concatenate(ade4s).flatten(), np.concatenate(fde4s).flatten(), torch.cat(xs).cpu().flatten(0,1),  torch.cat(ys).cpu().flatten(0,1) 
-        trajectory_type = []
-        for i in range(xs.shape[0]):
-            x = xs[i]
-            y = ys[i]
-            x = np.concatenate((x,y))
-            trajectory_type.append(classify_track(x))
-        trajectory_type = np.array(trajectory_type)
-        for i in range(8):
-            minADE = np.mean(ade4s[trajectory_type == i])
-            minFDE = np.mean(fde4s[trajectory_type == i])
-            p = ade4s[trajectory_type == i].shape[0] / float(trajectory_type.shape[0]) * 100
-            print('catecory {}: avg minADE (4s) {}, avg minFDE (4s) {}, {:.2f}p of dataset'.format(i,minADE, minFDE, p))
+    for i in range(1,11):
+        from_idx = int(i / 100 * baseline_sorted.shape[0])
+        picked_inds = baseline_inds[-from_idx:]
+        fde_i = torch.mean(fde_errs[picked_inds])
+        ade_i = torch.mean(ade_errs[picked_inds])
+        print('[{}] Top {} minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(),i,ade_i,fde_i))
+    
+    for i in range(1,11):
+        from_idx = int(i / 100 * kalman_sorted.shape[0])
+        picked_inds = kalman_inds[-from_idx:]
+        fde_i = torch.mean(fde_errs[picked_inds])
+        ade_i = torch.mean(ade_errs[picked_inds])
+        print('[{}] Kalman Top {} minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(),i,ade_i,fde_i))
     
     return avg_meter['fde_4'] / avg_meter['counter'], avg_meter['ade_4'] / avg_meter['counter']
 
@@ -282,7 +257,6 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, default='nba', metavar='N', help='dataset name')
     parser.add_argument('--config', type=str, default='configs/mart_nba_reproduce.yaml', help='config path')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
-    parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
     parser.add_argument("--test", action='store_true')
 
     args = parser.parse_args()
