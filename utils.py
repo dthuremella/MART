@@ -16,14 +16,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-viz = False
+viz = False # only possible during inference
 
 #### MoE args ####
-moe_e = False
-moe_n = False
+moe_e = True
+moe_n = True
 NUM_EXPERTS = 24
 TOPK = 1
-SHARED = 0
+SHARED = 1
 
 two_layer_router = False # only impl for harmonic
 
@@ -34,7 +34,7 @@ class_token_harmonic_div_is_always_1 = False
 
 #### Harmonic args #####
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
-harmonic_bias_loss = 1000 # number (how much to weight it), or None
+harmonic_bias_loss = 0.5 # number (how much to weight it), or None
 # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
 
 # force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
@@ -47,11 +47,10 @@ harmonic_bias_loss = 1000 # number (how much to weight it), or None
 # 4 experts with 3x the size for next 3%
 # 4 experts with 5x the size for next 1%
 # 4 experts with 10x the size for best 1%
-force_kalman = False
+force_kalman = True
 ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
-targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # should sum to 1, set this to NONE if not using KL divergence loss
-# for reference: topk_intervals = [0, 1, 2, 5, 10, 100] # means the first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
-percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py
+targets = None #[0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
 # didn't work:
@@ -349,6 +348,7 @@ class FMoEHarmonic(FMoE):
         if force_kalman:
             factor =int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
             self.gates = [gate(d_model, factor, world_size, top_k, gate_bias=gate_bias) for i in range(len(ratios))] # 4 experts per ratio
+            self.gates = nn.ModuleList(self.gates)
 
         if issubclass(gate, NaiveGate):
             self.gate = gate(d_model, num_expert, world_size, top_k, gate_bias=gate_bias)
@@ -418,34 +418,48 @@ class FMoEHarmonic(FMoE):
 
         if force_kalman and self.training: ########### main functionality of forcing kalman groups in training
             gate_top_k_idx = torch.full(
-                (moe_inp.shape[0], 2), -1,
+                (moe_inp.shape[0], TOPK), -1,
                 dtype=torch.long,          # indices should be long
                 device=moe_inp.device
             )
-
             gate_score = torch.full(
-                (moe_inp.shape[0], 2), -1.0,
+                (moe_inp.shape[0], TOPK), -1.0,
                 dtype=moe_inp.dtype,       # match float32/float16/bfloat16
                 device=moe_inp.device
             )
-            avg_expert_idx_list = []
-
+            gate_probs = torch.full(
+                (moe_inp.shape[0], NUM_EXPERTS), 0,
+                dtype=moe_inp.dtype,       # match float32/float16/bfloat16
+                device=moe_inp.device
+            )
+            # avg_expert_idx_list = []
+            factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
             for i in range(len(ratios)):
                 kalman_start = percentile_intervals[i]
                 kalman_end = percentile_intervals[i+1]
-                import pdb; pdb.set_trace() # is it and or & ???
 
-                inds = (kalman_score > kalman_start) and (kalman_score <= kalman_end)
+                inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
                 moe_inp_i = moe_inp[inds]
-                gate_top_k_idx_i, gate_score_i, avg_expert_idx_i = self.gates[i](moe_inp_i)
+                gate_top_k_idx_i, gate_score_i, gate_logits_i, avg_expert_idx_i = self.gates[i](moe_inp_i, return_all_scores=True) #gates will return something from 0-3 since each gate only has 4 experts, but we will add an offset to make it match the actual expert indices in the model
+                gate_top_k_idx_i = gate_top_k_idx_i + i * factor # add offset to get actual expert indices in the model
 
                 gate_top_k_idx[inds] = gate_top_k_idx_i
                 gate_score[inds] = gate_score_i
+                gate_probs[inds, i*factor:(i+1)*factor] = F.softmax(gate_logits_i, dim=-1)
 
-                avg_expert_idx_list.append(avg_expert_idx_i)
-            avg_expert_idx = torch.mean(avg_expert_idx_list)
+            #     avg_expert_idx_list.append(avg_expert_idx_i)
+            # avg_expert_idx = torch.mean(avg_expert_idx_list)
 
-            # train the normal gate with this series of gates (and hack avg_expert_idx to do it)
+            # train the normal gate with this series of gates (and hack avg_expert_idx to do it) TODO
+            inference_gate_top_k_idx, inference_gate_score, inference_gate_logits, inference_avg_expert_idx = self.gate(moe_inp, return_all_scores=True)
+            # Distillation loss — cross entropy between learned gate and hard-coded decisions
+            gate_inference_log_probs = F.log_softmax(inference_gate_logits, dim=-1)
+            distill_loss = F.kl_div(gate_inference_log_probs, gate_probs, reduction='batchmean')
+
+            avg_expert_idx = distill_loss
+
+            # # use the inference loss during training too, but force it to become more similar to kalman grouping
+            gate_top_k_idx, gate_score = inference_gate_top_k_idx, inference_gate_score
 
         else:
             gate_top_k_idx, gate_score, avg_expert_idx = self.gate(moe_inp)
@@ -586,17 +600,16 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
 
     def forward(self, inp: torch.Tensor, ret={}, kalman_score=None):
         original_shape = inp.shape
-        if force_kalman:
-            import pdb; pdb.set_trace() # reshape kalman_score to match input
+        if force_kalman and self.training:
             if len(inp.shape) > 3:
-                kalman_score = kalman_score.unsqueeze(-1).expand(original_shape[...,0]) # expand it to make it match all but the last dimension of input
+                kalman_score = kalman_score.unsqueeze(-1).expand(inp[...,0].shape) # expand it to make it match all but the last dimension of input
             kalman_score = kalman_score.flatten()
 
         if not self.class_token_moe: inp = inp.reshape(-1, self.d_model)
         if viz: 
             output, avg_expert_idx, gate_score, top_k_idx = super().forward(inp)
-            ret["gate_score"] = gate_score.reshape(original_shape[0], -1, 2)
-            ret["top_k_idx"] = top_k_idx.reshape(original_shape[0], -1, 2)
+            ret["gate_score"] = gate_score.reshape(original_shape[0], -1, TOPK)
+            ret["top_k_idx"] = top_k_idx.reshape(original_shape[0], -1, TOPK)
         else: output, avg_expert_idx = super().forward(inp, kalman_score=kalman_score)
         ret["avg_expert_idx"] = avg_expert_idx
         return output.reshape(original_shape)

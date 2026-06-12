@@ -5,7 +5,7 @@ from torch.utils.data import Dataset
 
 ### kalman does not work with attribute dataset - it's either/or
 attribute_dataset = False
-use_kalman = False
+use_kalman = True
 
 class NBADataset(Dataset):
     """Dataloder for the Trajectory datasets"""

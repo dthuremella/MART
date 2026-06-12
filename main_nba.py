@@ -54,6 +54,14 @@ def print_flops(model):
         if hasattr(module, '_flop_count') and module._flop_count > 0:
             print(f"  {name}: {module._flop_count:.3e}")
 
+def get_total_flops(model):
+    return sum(m._flop_count for m in model.modules() if hasattr(m, '_flop_count'))
+
+def reset_flop_counts(model):
+    for m in model.modules():
+        if hasattr(m, '_flop_count'):
+            m._flop_count = 0
+
 def main():
     if args.seed >= 0:
         seed = args.seed
@@ -152,7 +160,6 @@ def train(epoch, model, optimizer, loader):
             x_abs, y, kalman = x_abs.cuda(), y.cuda(), kalman.cuda()
             if force_kalman: 
                 kalman_score = kalman   
-                import pdb; pdb.set_trace() # measure the size of kalman_score to make sure its right 
         else:
             x_abs, y = data
             x_abs, y = x_abs.cuda(), y.cuda()        
@@ -163,7 +170,9 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
+        if i == 2 and measure_flops: reset_flop_counts(model)
         y_pred, avg_expert_idx, _ = model(x_abs, x_rel, kalman_score=kalman_score)
+        if i == 2 and measure_flops: flops_per_batch = get_total_flops(model)
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -184,9 +193,13 @@ def train(epoch, model, optimizer, loader):
         optimizer.step()
 
         if i % 100 == 0:
-            th = get_th(opts, model)
-            print('[{}] Epochs: {:02d}/{:02d}| It: {:04d}/{:04d} | Loss: {:03f} | Threshold: {} | LR: {}'
-                  .format(loader.dataset.mode.upper(), epoch + 1, opts.num_epochs, i + 1, loader_len, total_loss.item(), th, optimizer.param_groups[0]['lr']))
+            if i == 2 and measure_flops:
+                print('[{}] Epochs: {:02d}/{:02d}| It: {:04d}/{:04d} | Loss: {:03f} | Flops: {} | LR: {}'
+                    .format(loader.dataset.mode.upper(), epoch + 1, opts.num_epochs, i + 1, loader_len, total_loss.item(), flops_per_batch, optimizer.param_groups[0]['lr']))
+            else:
+                th = get_th(opts, model)
+                print('[{}] Epochs: {:02d}/{:02d}| It: {:04d}/{:04d} | Loss: {:03f} | Threshold: {} | LR: {}'
+                    .format(loader.dataset.mode.upper(), epoch + 1, opts.num_epochs, i + 1, loader_len, total_loss.item(), th, optimizer.param_groups[0]['lr']))
     return avg_meter['loss'] / avg_meter['counter']
 
 
@@ -227,6 +240,8 @@ def test(epoch, model, loader, prof=None):
                 if measure_nvtx:
                     torch.cuda.synchronize()
                     nvtx.range_push("forward")
+                if measure_flops:
+                    reset_flop_counts(model)
 
             y_pred, _, score = model(x_abs, x_rel)
 
