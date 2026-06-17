@@ -21,7 +21,7 @@ import torch.cuda.nvtx as nvtx
 
 measure_nvtx = False 
 
-measure_flops = False
+measure_flops = True
 def register_flop_hooks(model):
     def count_expert_flops(module, input, output):
         inp = input[0]
@@ -170,9 +170,9 @@ def train(epoch, model, optimizer, loader):
         x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
         x_rel[:, :, 0] = x_rel[:, :, 1]
         
-        if i == 2 and measure_flops: reset_flop_counts(model)
+        if (i % 100 == 0 and i != 0) and measure_flops: reset_flop_counts(model)
         y_pred, avg_expert_idx, _ = model(x_abs, x_rel, kalman_score=kalman_score)
-        if i == 2 and measure_flops: flops_per_batch = get_total_flops(model)
+        if (i % 100 == 0 and i != 0) and measure_flops: flops_per_batch = get_total_flops(model)
 
         if opts.pred_rel:
             cur_pos = x_abs[:, :, [-1]].unsqueeze(2)
@@ -193,7 +193,7 @@ def train(epoch, model, optimizer, loader):
         optimizer.step()
 
         if i % 100 == 0:
-            if i == 2 and measure_flops:
+            if i != 0 and measure_flops:
                 print('[{}] Epochs: {:02d}/{:02d}| It: {:04d}/{:04d} | Loss: {:03f} | Flops: {} | LR: {}'
                     .format(loader.dataset.mode.upper(), epoch + 1, opts.num_epochs, i + 1, loader_len, total_loss.item(), flops_per_batch, optimizer.param_groups[0]['lr']))
             else:
@@ -251,8 +251,10 @@ def test(epoch, model, loader, prof=None):
                     nvtx.range_pop()
                     break
                 if measure_flops:
-                    print_flops(model)
-                    import sys; sys.exit(0)
+                    flops_per_batch = get_total_flops(model)
+                    if args.test:
+                        print_flops(model)
+                        import sys; sys.exit(0)
 
             if viz:
                 if moe_e or moe_n:
@@ -315,7 +317,7 @@ def test(epoch, model, loader, prof=None):
     print('[{}] minADE/minFDE (2.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_2'] / avg_meter['counter'], avg_meter['fde_2'] / avg_meter['counter']))
     print('[{}] minADE/minFDE (3.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_3'] / avg_meter['counter'], avg_meter['fde_3'] / avg_meter['counter']))
     print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']))
-    
+    if measure_flops: print('[{}] model FLOPs for one batch (size {}): {:.3f}'.format(loader.dataset.mode.upper(), batch_size, flops_per_batch))
     return avg_meter['fde_4'] / avg_meter['counter'], avg_meter['ade_4'] / avg_meter['counter']
 
 

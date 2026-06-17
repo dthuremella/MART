@@ -34,7 +34,7 @@ class_token_harmonic_div_is_always_1 = False
 
 #### Harmonic args #####
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
-harmonic_bias_loss = 0.5 # number (how much to weight it), or None
+harmonic_bias_loss = 0.1 # number (how much to weight it), or None
 # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
 
 # force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
@@ -53,6 +53,7 @@ targets = None #[0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, se
 percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
+trainbigrouter = False # slightly deprecated, alternative is AME-TS method
 # didn't work:
 gumbel_off = False # if true, turns off gumbel softmax and just uses regular softmax (which is what we want for harmonic with bias loss, since we want the scores to be more stable and not have the randomness of gumbel)
 ortho = 0 # value of biasing alpha wrt avg_exp_index loss (if 0 then no bias, if >0 then bias with that value). This then gets multiplied by harmonic_bias_loss, so total alpha is ortho * harmonic_bias_loss
@@ -345,10 +346,11 @@ class FMoEHarmonic(FMoE):
         else:
             self.experts_fused = True
 
-        if force_kalman:
-            factor =int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
-            self.gates = [gate(d_model, factor, world_size, top_k, gate_bias=gate_bias) for i in range(len(ratios))] # 4 experts per ratio
-            self.gates = nn.ModuleList(self.gates)
+        if trainbigrouter:
+            if force_kalman:
+                factor =int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
+                self.gates = [gate(d_model, factor, world_size, top_k, gate_bias=gate_bias) for i in range(len(ratios))] # 4 experts per ratio
+                self.gates = nn.ModuleList(self.gates)
 
         if issubclass(gate, NaiveGate):
             self.gate = gate(d_model, num_expert, world_size, top_k, gate_bias=gate_bias)
@@ -417,50 +419,73 @@ class FMoEHarmonic(FMoE):
             moe_inp = tree.map_structure(slice_func, moe_inp)
 
         if force_kalman and self.training: ########### main functionality of forcing kalman groups in training
-            gate_top_k_idx = torch.full(
-                (moe_inp.shape[0], TOPK), -1,
-                dtype=torch.long,          # indices should be long
-                device=moe_inp.device
-            )
-            gate_score = torch.full(
-                (moe_inp.shape[0], TOPK), -1.0,
-                dtype=moe_inp.dtype,       # match float32/float16/bfloat16
-                device=moe_inp.device
-            )
-            gate_probs = torch.full(
-                (moe_inp.shape[0], NUM_EXPERTS), 0,
-                dtype=moe_inp.dtype,       # match float32/float16/bfloat16
-                device=moe_inp.device
-            )
-            # avg_expert_idx_list = []
-            factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
-            for i in range(len(ratios)):
-                kalman_start = percentile_intervals[i]
-                kalman_end = percentile_intervals[i+1]
+            if trainbigrouter:
+                gate_top_k_idx = torch.full(
+                    (moe_inp.shape[0], TOPK), -1,
+                    dtype=torch.long,          # indices should be long
+                    device=moe_inp.device
+                )
+                gate_score = torch.full(
+                    (moe_inp.shape[0], TOPK), -1.0,
+                    dtype=moe_inp.dtype,       # match float32/float16/bfloat16
+                    device=moe_inp.device
+                )
+                gate_probs = torch.full(
+                    (moe_inp.shape[0], NUM_EXPERTS), 0,
+                    dtype=moe_inp.dtype,       # match float32/float16/bfloat16
+                    device=moe_inp.device
+                )
+                # avg_expert_idx_list = []
+                factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
+                for i in range(len(ratios)):
+                    kalman_start = percentile_intervals[i]
+                    kalman_end = percentile_intervals[i+1]
 
-                inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
-                moe_inp_i = moe_inp[inds]
-                gate_top_k_idx_i, gate_score_i, gate_logits_i, avg_expert_idx_i = self.gates[i](moe_inp_i, return_all_scores=True) #gates will return something from 0-3 since each gate only has 4 experts, but we will add an offset to make it match the actual expert indices in the model
-                gate_top_k_idx_i = gate_top_k_idx_i + i * factor # add offset to get actual expert indices in the model
+                    inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
+                    moe_inp_i = moe_inp[inds]
+                    gate_top_k_idx_i, gate_score_i, gate_logits_i, avg_expert_idx_i = self.gates[i](moe_inp_i, return_all_scores=True) #gates will return something from 0-3 since each gate only has 4 experts, but we will add an offset to make it match the actual expert indices in the model
+                    gate_top_k_idx_i = gate_top_k_idx_i + i * factor # add offset to get actual expert indices in the model
 
-                gate_top_k_idx[inds] = gate_top_k_idx_i
-                gate_score[inds] = gate_score_i
-                gate_probs[inds, i*factor:(i+1)*factor] = F.softmax(gate_logits_i, dim=-1)
+                    gate_top_k_idx[inds] = gate_top_k_idx_i
+                    gate_score[inds] = gate_score_i
+                    gate_probs[inds, i*factor:(i+1)*factor] = F.softmax(gate_logits_i, dim=-1)
 
-            #     avg_expert_idx_list.append(avg_expert_idx_i)
-            # avg_expert_idx = torch.mean(avg_expert_idx_list)
+                #     avg_expert_idx_list.append(avg_expert_idx_i)
+                # avg_expert_idx = torch.mean(avg_expert_idx_list)
 
-            # train the normal gate with this series of gates (and hack avg_expert_idx to do it) TODO
-            inference_gate_top_k_idx, inference_gate_score, inference_gate_logits, inference_avg_expert_idx = self.gate(moe_inp, return_all_scores=True)
-            # Distillation loss — cross entropy between learned gate and hard-coded decisions
-            gate_inference_log_probs = F.log_softmax(inference_gate_logits, dim=-1)
-            distill_loss = F.kl_div(gate_inference_log_probs, gate_probs, reduction='batchmean')
+                # train the normal gate with this series of gates (and hack avg_expert_idx to do it) TODO
+                inference_gate_top_k_idx, inference_gate_score, inference_gate_logits, inference_avg_expert_idx = self.gate(moe_inp, return_all_scores=True)
+                # Distillation loss — cross entropy between learned gate and hard-coded decisions
+                gate_inference_log_probs = F.log_softmax(inference_gate_logits, dim=-1)
+                distill_loss = F.kl_div(gate_inference_log_probs, gate_probs, reduction='batchmean')
 
-            avg_expert_idx = distill_loss
+                avg_expert_idx = distill_loss
 
-            # # use the inference loss during training too, but force it to become more similar to kalman grouping
-            gate_top_k_idx, gate_score = inference_gate_top_k_idx, inference_gate_score
+                # # use the inference loss during training too, but force it to become more similar to kalman grouping
+                gate_top_k_idx, gate_score = inference_gate_top_k_idx, inference_gate_score
 
+            else: # using AME-TS method
+                gate_probs = torch.full(
+                    (moe_inp.shape[0], NUM_EXPERTS), 0,
+                    dtype=moe_inp.dtype,       # match float32/float16/bfloat16
+                    device=moe_inp.device
+                )
+                # avg_expert_idx_list = []
+                factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
+                for i in range(len(ratios)):
+                    kalman_start = percentile_intervals[i]
+                    kalman_end = percentile_intervals[i+1]
+
+                    inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
+                    gate_probs[inds, i*factor:(i+1)*factor] = torch.ones(factor, device=moe_inp.device) / factor # set target distribution for this group of experts to be uniform across the experts in the group
+
+                # train the gate to predict according to kalman (and hack avg_expert_idx to do it) TODO
+                gate_top_k_idx, gate_score, gate_logits, gate_avg_expert_idx = self.gate(moe_inp, return_all_scores=True)
+                # Distillation loss — cross entropy between learned gate and hard-coded decisions
+                gate_log_probs = F.log_softmax(gate_logits, dim=-1)
+                distill_loss = F.kl_div(gate_log_probs, gate_probs, reduction='batchmean')
+
+                avg_expert_idx = distill_loss
         else:
             gate_top_k_idx, gate_score, avg_expert_idx = self.gate(moe_inp)
 
