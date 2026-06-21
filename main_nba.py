@@ -21,7 +21,7 @@ import torch.cuda.nvtx as nvtx
 
 measure_nvtx = False 
 
-measure_flops = True
+measure_flops = False
 def register_flop_hooks(model):
     def count_expert_flops(module, input, output):
         inp = input[0]

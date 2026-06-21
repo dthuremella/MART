@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-viz = False # only possible during inference
+viz = True # only possible during inference
 
 #### MoE args ####
 moe_e = True
@@ -34,8 +34,9 @@ class_token_harmonic_div_is_always_1 = False
 
 #### Harmonic args #####
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
-harmonic_bias_loss = 0.1 # number (how much to weight it), or None
+harmonic_bias_loss = 0.01 # number (how much to weight it), or None
 # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
+# ratios = [1, 1, 1, 1, 1, 1] # equal ratios
 
 # force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
 # long-tail (lt) ratios means:
@@ -49,7 +50,7 @@ harmonic_bias_loss = 0.1 # number (how much to weight it), or None
 # 4 experts with 10x the size for best 1%
 force_kalman = True
 ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
-targets = None #[0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
 percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
@@ -479,7 +480,7 @@ class FMoEHarmonic(FMoE):
                     inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
                     gate_probs[inds, i*factor:(i+1)*factor] = torch.ones(factor, device=moe_inp.device) / factor # set target distribution for this group of experts to be uniform across the experts in the group
 
-                # train the gate to predict according to kalman (and hack avg_expert_idx to do it) TODO
+                # train the gate to predict according to kalman (and hack avg_expert_idx to do it)
                 gate_top_k_idx, gate_score, gate_logits, gate_avg_expert_idx = self.gate(moe_inp, return_all_scores=True)
                 # Distillation loss — cross entropy between learned gate and hard-coded decisions
                 gate_log_probs = F.log_softmax(gate_logits, dim=-1)
