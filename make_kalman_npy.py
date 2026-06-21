@@ -128,11 +128,11 @@ def main(data_from='./datasets/nba/nba_test.npy', data_to='./datasets/nba/nba_te
 if __name__ == "__main__":
     # mode = 'test' # test or train
     dataset = 'nba'
-    ade = True
+    ade = False
 
     intervals=[0, 1, 2, 5, 10, 20, 100]
 
-    for mode in ['train']:
+    for mode in ['train', 'test']:
         data_from = f'./datasets/{dataset}/{dataset}_{mode}.npy'
         data_to = f'./datasets/{dataset}/{dataset}_{mode}_kalman.npy'
         kalman_intervals = main(data_from=data_from, data_to=data_to, T_hist=10, T_fut=20, ade=ade)

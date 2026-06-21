@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-viz = True # only possible during inference
+viz = False # only possible during inference
 
 #### MoE args ####
 moe_e = True
@@ -51,7 +51,8 @@ harmonic_bias_loss = 0.01 # number (how much to weight it), or None
 force_kalman = True
 ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
 targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
-percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
+# percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using ade, intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
+percentile_intervals = [0.0035185401793569326, 0.5150180834531785, 0.7816558456420898, 1.3492942690849303, 2.0764161109924317, 3.2681657791137697, 48.253883361816406]  # get from running make_kalman_npy.py using fde, intervals=[0, 1, 2, 5, 10, 20, 100]
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
 trainbigrouter = False # slightly deprecated, alternative is AME-TS method
@@ -603,7 +604,7 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
     ):
         # Build heterogeneous expert list
         expert_list = []  # Expert 0: identity
-        
+
         # Experts 1-7: variable hidden sizes
         for ratio in ratios:
             hidden = int(d_hidden * ratio)
