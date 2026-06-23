@@ -6,11 +6,12 @@ from torch.utils.data import Dataset
 ### kalman does not work with attribute dataset - it's either/or
 attribute_dataset = False
 use_kalman = True
+which_score = 'kalmanfde' # 'kalmanade', 'kalmanfde' or 'performance' --- only relevant if use_kalman is True, ignored otherwise
 
 class NBADataset(Dataset):
     """Dataloder for the Trajectory datasets"""
     def __init__(
-        self, obs_len=10, pred_len=20, mode='train'
+        self, obs_len=10, pred_len=20, mode='train', end_train=32500
     ):
         super(NBADataset, self).__init__()
         self.mode = mode
@@ -25,7 +26,7 @@ class NBADataset(Dataset):
             else:
                 data_root = './datasets/nba/nba_train.npy'
             if use_kalman:
-                data_root_kalman = './datasets/nba/nba_train_kalman.npy'
+                data_root_kalman = './datasets/nba/nba_train_{}.npy'.format(which_score)
         else:
             if attribute_dataset:
                 data_root_players = './datasets/nba/testset_players_xy.pkl.npy'
@@ -33,7 +34,7 @@ class NBADataset(Dataset):
             else:
                 data_root = './datasets/nba/nba_test.npy'
             if use_kalman:
-                data_root_kalman = './datasets/nba/nba_test_kalman.npy'
+                data_root_kalman = './datasets/nba/nba_test_{}.npy'.format(which_score)
 
         if attribute_dataset:
             self.trajs = (np.load(data_root_players), np.load(data_root_ball))
@@ -45,11 +46,11 @@ class NBADataset(Dataset):
         self.trajs /= (94/28) # Turn to meters
 
         if mode == 'train':
-            self.trajs = self.trajs[:32500]
-            if use_kalman: self.kalman_score = self.kalman_score[:32500]
+            self.trajs = self.trajs[:end_train]
+            if use_kalman: self.kalman_score = self.kalman_score[:end_train]
         elif mode == 'val':
-            self.trajs = self.trajs[32500:37500]
-            if use_kalman: self.kalman_score = self.kalman_score[32500:37500]
+            self.trajs = self.trajs[end_train:37500]
+            if use_kalman: self.kalman_score = self.kalman_score[end_train:37500]
         else:
             self.trajs = self.trajs[:12500]
             if use_kalman: self.kalman_score = self.kalman_score[:12500]

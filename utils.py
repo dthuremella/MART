@@ -22,7 +22,7 @@ viz = False # only possible during inference
 moe_e = True
 moe_n = True
 NUM_EXPERTS = 24
-TOPK = 1
+TOPK = 2
 SHARED = 1
 
 two_layer_router = False # only impl for harmonic
@@ -34,7 +34,8 @@ class_token_harmonic_div_is_always_1 = False
 
 #### Harmonic args #####
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
-harmonic_bias_loss = 0.01 # number (how much to weight it), or None
+harmonic_bias_loss = 0.5 # number (how much to weight it), or None
+print(f"Harmonic bias loss: {harmonic_bias_loss}")
 # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
 # ratios = [1, 1, 1, 1, 1, 1] # equal ratios
 
@@ -48,18 +49,68 @@ harmonic_bias_loss = 0.01 # number (how much to weight it), or None
 # 4 experts with 3x the size for next 3%
 # 4 experts with 5x the size for next 1%
 # 4 experts with 10x the size for best 1%
-force_kalman = True
+
 ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
 targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+
+force_kalman = True
+# ### kalman ade    !!! remember to also change dataset in dataloader_nba.py !!!
 # percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using ade, intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
+
+### kalman fde    !!! remember to also change dataset in dataloader_nba.py !!!
 percentile_intervals = [0.0035185401793569326, 0.5150180834531785, 0.7816558456420898, 1.3492942690849303, 2.0764161109924317, 3.2681657791137697, 48.253883361816406]  # get from running make_kalman_npy.py using fde, intervals=[0, 1, 2, 5, 10, 20, 100]
+
+# ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+# percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
+
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
-trainbigrouter = False # slightly deprecated, alternative is AME-TS method
-# didn't work:
-gumbel_off = False # if true, turns off gumbel softmax and just uses regular softmax (which is what we want for harmonic with bias loss, since we want the scores to be more stable and not have the randomness of gumbel)
+ortho_weight = 0 # only use with harmonic
+var_weight = 0 # only use with harmonic
+
+trainbigrouter = True # slightly deprecated, alternative is AME-TS method
 ortho = 0 # value of biasing alpha wrt avg_exp_index loss (if 0 then no bias, if >0 then bias with that value). This then gets multiplied by harmonic_bias_loss, so total alpha is ortho * harmonic_bias_loss
 
+# didn't work:
+gumbel_off = False # if true, turns off gumbel softmax and just uses regular softmax (which is what we want for harmonic with bias loss, since we want the scores to be more stable and not have the randomness of gumbel)
+
+def variance_loss(gate_logits):
+    """
+    gate_logits: (num_tokens, num_experts) — pre-softmax router scores
+    Maximize variance of routing scores → negate it as a loss.
+    """
+    scores = F.softmax(gate_logits, dim=-1)  # (T, E)
+    mean_per_expert = scores.mean(dim=0, keepdim=True)  # (1, E)
+    variance = ((scores - mean_per_expert) ** 2).mean()
+    return -variance  # negate because we want to maximize variance
+
+def orthogonality_loss_simple(expert_outputs, active_mask, eps=1e-8): # AME-TS method
+    """
+    expert_outputs: (B, E, D) outputs of the E experts in one group
+    active_mask:    (B, E) bool, True where that expert was co-activated for this example
+    """
+    gram = torch.einsum('bed,bfd->bef', expert_outputs, expert_outputs)   # (B,E,E)
+    pair_mask = active_mask.unsqueeze(2) & active_mask.unsqueeze(1)
+    eye = torch.eye(expert_outputs.size(1), dtype=torch.bool, device=expert_outputs.device)
+    pair_mask = pair_mask & ~eye
+    return (gram.abs() * pair_mask).sum() / pair_mask.sum().clamp(min=1)
+
+# def orthogonality_loss_projection(expert_outputs, active_mask, eps=1e-6): # Advancing Expert Specialization for Better MoE method
+#     """
+#     expert_outputs: (B, E, D), with rows for inactive experts already zeroed
+#                     (i.e. x_tilde_ij = expert_j(x_i) * I{s_ij>0})
+#     active_mask:    (B, E) bool, True where s_ij > 0
+#     """
+#     sq_norm = (expert_outputs ** 2).sum(-1)                              # (B,E)
+#     dots = torch.einsum('bed,bfd->bef', expert_outputs, expert_outputs)  # (B,E,E), [b,j,k]
+#     denom = sq_norm.unsqueeze(1) + eps                                   # norm of k, broadcast over j
+#     proj_sq = (dots ** 2) / denom                                        # ||proj_k(x_j)||^2
+
+#     eye = torch.eye(expert_outputs.size(1), dtype=torch.bool, device=expert_outputs.device)
+#     pair_mask = (active_mask.unsqueeze(2) & active_mask.unsqueeze(1)) & ~eye
+#     return (proj_sq * pair_mask).sum() / pair_mask.sum().clamp(min=1)
+# ortho proj doesn't work as well
+orthogonality_loss_function = orthogonality_loss_simple
 
 _call_count = 0
 class _ExpertPrint(_Expert):
@@ -489,7 +540,10 @@ class FMoEHarmonic(FMoE):
 
                 avg_expert_idx = distill_loss
         else:
-            gate_top_k_idx, gate_score, avg_expert_idx = self.gate(moe_inp)
+            gate_top_k_idx, gate_score, gate_logits, avg_expert_idx = self.gate(moe_inp, return_all_scores=True)
+        if var_weight > 0 and self.training:
+            var_loss = variance_loss(gate_logits)
+            avg_expert_idx = avg_expert_idx + var_weight * var_loss
 
         if len(inp_shape) > 2: # done for class_token_moe
             num_tokens = inp_shape[1] if len(inp_shape) == 3 else inp_shape[1] * inp_shape[1]
@@ -548,6 +602,12 @@ class FMoEHarmonic(FMoE):
                 return tensor
 
             moe_outp = tree.map_structure(view_func, fwd)
+        
+        raw_expert_outp = moe_outp  # (B, top_k, D), pre-gate-weighting — keep this for orthogonal loss
+        if ortho_weight > 0 and self.training:
+            active_mask = gate_score > 0  # (B, top_k) bool, True where that expert was activated
+            ortho_loss = orthogonality_loss_function(raw_expert_outp, active_mask)
+            avg_expert_idx = avg_expert_idx + ortho_weight * ortho_loss
 
         gate_score = gate_score.view(-1, 1, self.top_k)
 

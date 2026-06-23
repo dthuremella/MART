@@ -128,13 +128,14 @@ def main(data_from='./datasets/nba/nba_test.npy', data_to='./datasets/nba/nba_te
 if __name__ == "__main__":
     # mode = 'test' # test or train
     dataset = 'nba'
-    ade = False
+    ade = True
 
+    which_de = 'ade' if ade else 'fde'
     intervals=[0, 1, 2, 5, 10, 20, 100]
 
     for mode in ['train', 'test']:
         data_from = f'./datasets/{dataset}/{dataset}_{mode}.npy'
-        data_to = f'./datasets/{dataset}/{dataset}_{mode}_kalman.npy'
+        data_to = f'./datasets/{dataset}/{dataset}_{mode}_kalman{which_de}.npy'
         kalman_intervals = main(data_from=data_from, data_to=data_to, T_hist=10, T_fut=20, ade=ade)
         print(f'Saved to {data_to}')
         print(f'Nth percentile: {intervals}')
