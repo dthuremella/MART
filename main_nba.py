@@ -49,10 +49,10 @@ def print_flops(model):
     total_flops = sum(m._flop_count for m in model.modules() if hasattr(m, '_flop_count'))
     print(f"\n=== FLOPs Report ===")
     print(f"Total FLOPs: {total_flops:.3e}")
-    print("\nPer module breakdown:")
-    for name, module in model.named_modules():
-        if hasattr(module, '_flop_count') and module._flop_count > 0:
-            print(f"  {name}: {module._flop_count:.3e}")
+    # print("\nPer module breakdown:")
+    # for name, module in model.named_modules():
+    #     if hasattr(module, '_flop_count') and module._flop_count > 0:
+    #         print(f"  {name}: {module._flop_count:.3e}")
 
 def get_total_flops(model):
     return sum(m._flop_count for m in model.modules() if hasattr(m, '_flop_count'))
@@ -183,6 +183,27 @@ def train(epoch, model, optimizer, loader):
         total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
         if harmonic_bias_loss is not None:
             total_loss += harmonic_bias_loss * avg_expert_idx
+        if learnable_targets:
+            learnable_target_alpha = 0.01  # weight for the learnable targets loss, original is 0.01
+            lower_flops_alpha = 0.01  # weight for the lower flops loss, original is 0.01
+            
+            learnable_target_loss, lower_flops_loss = 0, 0
+            # in your training_step, after computing the MoE loss:
+            for encoder in (model.pair_encoders + model.hyper_encoders):  # however you access your gates
+                for layer in encoder.layers:
+                    layer_moes = []
+                    if hasattr(layer, 'linear_net_n'): layer_moes.append(layer.linear_net_n)
+                    if hasattr(layer, 'linear_net_2e'): layer_moes.append(layer.linear_net_2e)
+                    for layer_moe in layer_moes:
+                        if layer_moe.gate.target_logits is not None:
+                            p = F.softmax(layer_moe.gate.target_logits, dim=0)
+                            entropy = -(p * p.log()).sum()
+                            learnable_target_loss = learnable_target_loss - learnable_target_alpha * entropy  # subtract to maximise entropy (prevent collapse)
+                            if lower_flops:
+                                target_flops = torch.sum(torch.tensor(ratios, device=p.device) * p)
+                                lower_flops_loss = lower_flops_loss + lower_flops_alpha * target_flops
+
+            total_loss = total_loss + learnable_target_loss + lower_flops_loss
 
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
@@ -301,6 +322,20 @@ def test(epoch, model, loader, prof=None):
         nvtx.range_pop(); import sys; sys.exit(0) # stop measuring
 
     if viz and not measure_nvtx:
+        if learnable_targets:
+            for encoder in (model.pair_encoders + model.hyper_encoders):  # however you access your gates
+                for layer in encoder.layers:
+                    layer_moes = []
+                    if hasattr(layer, 'linear_net_n'): layer_moes.append(layer.linear_net_n)
+                    if hasattr(layer, 'linear_net_2e'): layer_moes.append(layer.linear_net_2e)
+                    for layer_moe in layer_moes:
+                        print('target_logits:', layer_moe.gate.target_logits)
+                        # if layer_moe.gate.target_logits is not None:
+                        #     p = F.softmax(layer_moe.gate.target_logits, dim=0)
+                        #     entropy = -(p * p.log()).sum()
+                    print('\n')
+                print('hyper encoders:')
+
         if moe_e or moe_n:
             for score_type in ['gate_score', 'top_k_idx']:
                 for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:

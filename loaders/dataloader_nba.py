@@ -5,8 +5,8 @@ from torch.utils.data import Dataset
 
 ### kalman does not work with attribute dataset - it's either/or
 attribute_dataset = False
-use_kalman = True
-which_score = 'kalmanfde' # 'kalmanade', 'kalmanfde' or 'performance' --- only relevant if use_kalman is True, ignored otherwise
+use_kalman = False
+which_score = 'performance' # 'kalmanade', 'kalmanfde' or 'performance' --- only relevant if use_kalman is True, ignored otherwise
 
 class NBADataset(Dataset):
     """Dataloder for the Trajectory datasets"""

@@ -22,7 +22,7 @@ viz = False # only possible during inference
 moe_e = True
 moe_n = True
 NUM_EXPERTS = 24
-TOPK = 2
+TOPK = 1
 SHARED = 1
 
 two_layer_router = False # only impl for harmonic
@@ -34,11 +34,12 @@ class_token_harmonic_div_is_always_1 = False
 
 #### Harmonic args #####
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
-harmonic_bias_loss = 0.5 # number (how much to weight it), or None
+harmonic_bias_loss = 1 # number (how much to weight it), or None
 print(f"Harmonic bias loss: {harmonic_bias_loss}")
 # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
-# ratios = [1, 1, 1, 1, 1, 1] # equal ratios
+ratios = [1, 1, 1, 1, 1, 1] # equal ratios
 
+# ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
 # force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
 # long-tail (lt) ratios means:
 # .01*10+.01*5+.03*3+.05*2+.10*1+.8*1/2+1/4
@@ -50,25 +51,27 @@ print(f"Harmonic bias loss: {harmonic_bias_loss}")
 # 4 experts with 5x the size for next 1%
 # 4 experts with 10x the size for best 1%
 
-ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
 targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+# targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
+learnable_targets = True
+lower_flops = False
 
-force_kalman = True
+force_kalman = False
 # ### kalman ade    !!! remember to also change dataset in dataloader_nba.py !!!
 # percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using ade, intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
 
-### kalman fde    !!! remember to also change dataset in dataloader_nba.py !!!
-percentile_intervals = [0.0035185401793569326, 0.5150180834531785, 0.7816558456420898, 1.3492942690849303, 2.0764161109924317, 3.2681657791137697, 48.253883361816406]  # get from running make_kalman_npy.py using fde, intervals=[0, 1, 2, 5, 10, 20, 100]
+# ### kalman fde    !!! remember to also change dataset in dataloader_nba.py !!!
+# percentile_intervals = [0.0035185401793569326, 0.5150180834531785, 0.7816558456420898, 1.3492942690849303, 2.0764161109924317, 3.2681657791137697, 48.253883361816406]  # get from running make_kalman_npy.py using fde, intervals=[0, 1, 2, 5, 10, 20, 100]
 
-# ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
-# percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
+### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
 
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
-ortho_weight = 0 # only use with harmonic
+ortho_weight = 0 # ortho simple or proj, only use with harmonic
 var_weight = 0 # only use with harmonic
 
-trainbigrouter = True # slightly deprecated, alternative is AME-TS method
+trainbigrouter = False # slightly deprecated, alternative is AME-TS method, use with force_kalman
 ortho = 0 # value of biasing alpha wrt avg_exp_index loss (if 0 then no bias, if >0 then bias with that value). This then gets multiplied by harmonic_bias_loss, so total alpha is ortho * harmonic_bias_loss
 
 # didn't work:
@@ -162,8 +165,17 @@ class GSoftmaxHarmonicGate(NaiveGate):
                     nn.ReLU(inplace=True),
                     nn.Linear(int(d_model / 2), self.tot_expert, bias = gate_bias),
                 )
+        self.num_expert = num_expert
 
-    def forward(self, inp, return_all_scores=False):
+        # Learnable logits over ratio groups — softmax gives valid distribution
+        if learnable_targets:
+            init = torch.tensor(targets, dtype=torch.float32)
+            # initialise in log space so softmax recovers roughly targets at step 0
+            self.target_logits = nn.Parameter(torch.log(init))
+        else:
+            self.target_logits = None
+
+    def forward(self, inp, return_all_scores=False, target=targets):
         r"""
         The naive implementation simply calculates the top-k of a linear layer's
         output.
@@ -176,21 +188,26 @@ class GSoftmaxHarmonicGate(NaiveGate):
 
         gate_score = F.gumbel_softmax(gate_top_k_val, tau=self.tau, hard=(gumbel_off or not self.training))
 
-        if targets is not None:
+        if target is not None:
             # gate_score shape: (batch*seq, top_k) -> (batch*seq, num_experts)
             # Scatter top-k scores back into full expert dimension
-            full_scores = torch.zeros(gate_score.shape[0], NUM_EXPERTS, device=gate_score.device)
+            full_scores = torch.zeros(gate_score.shape[0], self.num_expert, device=gate_score.device)
             full_scores.scatter_(1, gate_top_k_idx, gate_score)  # (batch*seq, num_experts)
 
+            if self.target_logits is not None:   # Use learned distribution instead of fixed targets
+                target_distribution = F.softmax(self.target_logits, dim=0)  # always sums to 1
+            else:
+                target_distribution = torch.tensor(target, device=gate_score.device).float()
+
             # Adjust gate_score to match target distribution
-            target_distribution = torch.tensor(targets, device=gate_score.device).float()
-            actual_dist = F.softmax(gate.view(-1, NUM_EXPERTS), dim=-1).mean(dim=0)  # (num_experts,), sums to 1
+            target_distribution = torch.tensor(target, device=gate_score.device).float()
+            actual_dist = F.softmax(gate.view(-1, self.num_expert), dim=-1).mean(dim=0)  # (num_experts,), sums to 1
             actual_dist = actual_dist.reshape((-1, len(ratios))).sum(dim=0)  # reshape to (experts_per_group, num_ratio_groups) and take mean of experts_per_group to get (num_ratio_groups,)
             avg_expert_idx = F.kl_div(actual_dist.log(), target_distribution, reduction='sum')
         else:
             # Compute average expert index weighted by scores
             # Shape: gate_top_k_idx (batch*seq, top_k), gate_score (batch*seq, top_k)
-            factor = NUM_EXPERTS / len(ratios)  # Number of experts per ratio group
+            factor = self.num_expert / len(ratios)  # Number of experts per ratio group
             ratios_based_idx = (gate_top_k_idx / factor).int() # Convert to (0, 7)
             avg_expert_idx = (ratios_based_idx.float() * gate_score).sum(dim=-1).mean()
 
@@ -496,7 +513,7 @@ class FMoEHarmonic(FMoE):
 
                     inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
                     moe_inp_i = moe_inp[inds]
-                    gate_top_k_idx_i, gate_score_i, gate_logits_i, avg_expert_idx_i = self.gates[i](moe_inp_i, return_all_scores=True) #gates will return something from 0-3 since each gate only has 4 experts, but we will add an offset to make it match the actual expert indices in the model
+                    gate_top_k_idx_i, gate_score_i, gate_logits_i, avg_expert_idx_i = self.gates[i](moe_inp_i, return_all_scores=True, target=None) #gates will return something from 0-3 since each gate only has 4 experts, but we will add an offset to make it match the actual expert indices in the model
                     gate_top_k_idx_i = gate_top_k_idx_i + i * factor # add offset to get actual expert indices in the model
 
                     gate_top_k_idx[inds] = gate_top_k_idx_i
