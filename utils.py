@@ -37,9 +37,9 @@ even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for thi
 harmonic_bias_loss = 1 # number (how much to weight it), or None
 print(f"Harmonic bias loss: {harmonic_bias_loss}")
 # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
-ratios = [1, 1, 1, 1, 1, 1] # equal ratios
+# ratios = [1, 1, 1, 1, 1, 1] # equal ratios
 
-# ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
+ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
 # force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
 # long-tail (lt) ratios means:
 # .01*10+.01*5+.03*3+.05*2+.10*1+.8*1/2+1/4
@@ -53,8 +53,13 @@ ratios = [1, 1, 1, 1, 1, 1] # equal ratios
 
 targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
 # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
-learnable_targets = True
-lower_flops = False
+learnable_targets = True # by default, use Expectation Maximization method
+entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+
+lower_flops = True
+lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+
+# RETRY ALL:
 
 force_kalman = False
 # ### kalman ade    !!! remember to also change dataset in dataloader_nba.py !!!
@@ -74,7 +79,6 @@ var_weight = 0 # only use with harmonic
 trainbigrouter = False # slightly deprecated, alternative is AME-TS method, use with force_kalman
 ortho = 0 # value of biasing alpha wrt avg_exp_index loss (if 0 then no bias, if >0 then bias with that value). This then gets multiplied by harmonic_bias_loss, so total alpha is ortho * harmonic_bias_loss
 
-# didn't work:
 gumbel_off = False # if true, turns off gumbel softmax and just uses regular softmax (which is what we want for harmonic with bias loss, since we want the scores to be more stable and not have the randomness of gumbel)
 
 def variance_loss(gate_logits):
@@ -172,8 +176,10 @@ class GSoftmaxHarmonicGate(NaiveGate):
             init = torch.tensor(targets, dtype=torch.float32)
             # initialise in log space so softmax recovers roughly targets at step 0
             self.target_logits = nn.Parameter(torch.log(init))
+            self.update_targets = False
         else:
             self.target_logits = None
+            self.update_targets = None
 
     def forward(self, inp, return_all_scores=False, target=targets):
         r"""
@@ -194,16 +200,24 @@ class GSoftmaxHarmonicGate(NaiveGate):
             full_scores = torch.zeros(gate_score.shape[0], self.num_expert, device=gate_score.device)
             full_scores.scatter_(1, gate_top_k_idx, gate_score)  # (batch*seq, num_experts)
 
-            if self.target_logits is not None:   # Use learned distribution instead of fixed targets
-                target_distribution = F.softmax(self.target_logits, dim=0)  # always sums to 1
-            else:
-                target_distribution = torch.tensor(target, device=gate_score.device).float()
-
-            # Adjust gate_score to match target distribution
-            target_distribution = torch.tensor(target, device=gate_score.device).float()
             actual_dist = F.softmax(gate.view(-1, self.num_expert), dim=-1).mean(dim=0)  # (num_experts,), sums to 1
             actual_dist = actual_dist.reshape((-1, len(ratios))).sum(dim=0)  # reshape to (experts_per_group, num_ratio_groups) and take mean of experts_per_group to get (num_ratio_groups,)
-            avg_expert_idx = F.kl_div(actual_dist.log(), target_distribution, reduction='sum')
+
+            if learnable_targets:  
+                target_distribution = F.softmax(self.target_logits, dim=0)  # target distribution is logits not probability so take softmax
+                if self.update_targets:
+                    entropy = -(target_distribution * target_distribution.log()).sum()
+                    target_flops = torch.sum(torch.tensor(ratios, device=target_distribution.device) * target_distribution) if lower_flops else 0
+                    kl_loss = F.kl_div(target_distribution.log(), actual_dist.detach(), reduction='sum')
+                    avg_expert_idx = kl_loss + entropy_alpha * entropy + lower_flops_alpha * target_flops
+                else: 
+                    avg_expert_idx = F.kl_div(actual_dist.log(), target_distribution.detach(), reduction='sum')
+
+            else:
+                # Adjust gate_score to match target distribution
+                target_distribution = torch.tensor(target, device=gate_score.device).float() # we don't need to take softmax because the target we defined is already a probability
+                avg_expert_idx = F.kl_div(actual_dist.log(), target_distribution, reduction='sum')
+
         else:
             # Compute average expert index weighted by scores
             # Shape: gate_top_k_idx (batch*seq, top_k), gate_score (batch*seq, top_k)

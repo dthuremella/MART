@@ -10,6 +10,7 @@ import pickle
 
 from torch import optim
 from torch.optim import lr_scheduler
+import torch.nn.functional as F
 
 from utils import *
 from models.mart import MART, viz
@@ -86,6 +87,9 @@ def main():
         register_flop_hooks(model)
 
     optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=1e-12)
+    if learnable_targets:
+        target_params = [p for n, p in model.named_parameters() if 'target_logits' in n]
+        optimizer_target = optim.Adam(target_params, lr=1e-3)  # can tune this lr separately
 
     if opts.scheduler_type == 'StepLR':
         scheduler = lr_scheduler.StepLR(optimizer, step_size=opts.decay_step, gamma=opts.decay_gamma)
@@ -117,6 +121,11 @@ def main():
     
     for epoch in range(0, opts.num_epochs):
         train(epoch, model, optimizer, loader_train)
+
+        # run train again to update the target parameter
+        if learnable_targets:
+            train(epoch, model, optimizer_target, loader_train, train_EM_targets=True)
+
         test_loss, ade = test(epoch, model, loader_test)
         results['epochs'].append(epoch)
         results['losses'].append(test_loss)
@@ -146,10 +155,16 @@ def main():
             scheduler.step()
 
 
-def train(epoch, model, optimizer, loader):
+def train(epoch, model, optimizer, loader, train_EM_targets=False):
     model.train()
     avg_meter = {'epoch': epoch, 'loss': 0, 'counter': 0}
     loader_len = len(loader)
+
+    if train_EM_targets:
+        # Set the flag on all gates so forward() knows which KL direction to use
+        for module in model.modules():
+            if isinstance(module, GSoftmaxHarmonicGate):
+                module.update_targets = True
 
     for i, data in enumerate(loader):
         optimizer.zero_grad()
@@ -181,29 +196,9 @@ def train(epoch, model, optimizer, loader):
         y = y[:, :, None, :, :]
         
         total_loss = torch.mean(torch.min(torch.mean(torch.norm(y_pred - y, dim=-1), dim=3), dim=2)[0]) # for all agents
+        
         if harmonic_bias_loss is not None:
             total_loss += harmonic_bias_loss * avg_expert_idx
-        if learnable_targets:
-            learnable_target_alpha = 0.01  # weight for the learnable targets loss, original is 0.01
-            lower_flops_alpha = 0.01  # weight for the lower flops loss, original is 0.01
-            
-            learnable_target_loss, lower_flops_loss = 0, 0
-            # in your training_step, after computing the MoE loss:
-            for encoder in (model.pair_encoders + model.hyper_encoders):  # however you access your gates
-                for layer in encoder.layers:
-                    layer_moes = []
-                    if hasattr(layer, 'linear_net_n'): layer_moes.append(layer.linear_net_n)
-                    if hasattr(layer, 'linear_net_2e'): layer_moes.append(layer.linear_net_2e)
-                    for layer_moe in layer_moes:
-                        if layer_moe.gate.target_logits is not None:
-                            p = F.softmax(layer_moe.gate.target_logits, dim=0)
-                            entropy = -(p * p.log()).sum()
-                            learnable_target_loss = learnable_target_loss - learnable_target_alpha * entropy  # subtract to maximise entropy (prevent collapse)
-                            if lower_flops:
-                                target_flops = torch.sum(torch.tensor(ratios, device=p.device) * p)
-                                lower_flops_loss = lower_flops_loss + lower_flops_alpha * target_flops
-
-            total_loss = total_loss + learnable_target_loss + lower_flops_loss
 
         avg_meter['loss'] += total_loss.item() * batch_size * num_agents
         avg_meter['counter'] += (batch_size * num_agents)
@@ -327,15 +322,14 @@ def test(epoch, model, loader, prof=None):
                 for layer in encoder.layers:
                     layer_moes = []
                     if hasattr(layer, 'linear_net_n'): layer_moes.append(layer.linear_net_n)
-                    if hasattr(layer, 'linear_net_2e'): layer_moes.append(layer.linear_net_2e)
+                    if hasattr(layer, 'linear_net2_e'): layer_moes.append(layer.linear_net2_e)
                     for layer_moe in layer_moes:
-                        print('target_logits:', layer_moe.gate.target_logits)
+                        print('target_logits:', F.softmax(layer_moe.gate.target_logits).tolist(), id(layer_moe.gate.target_logits))
                         # if layer_moe.gate.target_logits is not None:
                         #     p = F.softmax(layer_moe.gate.target_logits, dim=0)
                         #     entropy = -(p * p.log()).sum()
                     print('\n')
-                print('hyper encoders:')
-
+ 
         if moe_e or moe_n:
             for score_type in ['gate_score', 'top_k_idx']:
                 for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:

@@ -194,7 +194,7 @@ class MART(nn.Module):
                 scores['top_k_idx']['pair_e'].append(scores_pair['top_k_idx_e'])
                 scores['top_k_idx']['group_n'].append(scores_group['top_k_idx_n'])
                 scores['top_k_idx']['group_e'].append(scores_group['top_k_idx_e'])
-            avg_expert_idx = avg_expert_idx_group + avg_expert_idx_pair
+            avg_expert_idx = avg_expert_idx + avg_expert_idx_group + avg_expert_idx_pair
 
         num_moes = 0
         if moe_n: num_moes += 2
