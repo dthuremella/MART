@@ -337,7 +337,7 @@ def test(epoch, model, loader, prof=None):
                     scores[score_type][score_subtype] = torch.cat(scores[score_type][score_subtype], dim=1).cpu()
         xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
         data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
-        pickle.dump(data_dump, open('viz_scores_nba_{}{}.pkl'.format(args.tag, 'attr' if attribute_dataset else ''), 'wb'))
+        pickle.dump(data_dump, open('viz_scores_nba_redotarget_{}{}.pkl'.format(args.tag, 'attr' if attribute_dataset else ''), 'wb'))
 
 
     th = get_th(opts, model)

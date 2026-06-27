@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-viz = False # only possible during inference
+viz = True # only possible during inference
 
 #### MoE args ####
 moe_e = True
@@ -53,11 +53,15 @@ ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
 
 targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
 # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
-learnable_targets = True # by default, use Expectation Maximization method
-entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
 
-lower_flops = True
-lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
+targets = torch.tensor(targets).repeat_interleave(factor) / factor
+
+learnable_targets = False # by default, use Expectation Maximization method
+# entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+
+lower_flops = False
+# lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
 
 # RETRY ALL:
 
@@ -102,22 +106,22 @@ def orthogonality_loss_simple(expert_outputs, active_mask, eps=1e-8): # AME-TS m
     pair_mask = pair_mask & ~eye
     return (gram.abs() * pair_mask).sum() / pair_mask.sum().clamp(min=1)
 
-# def orthogonality_loss_projection(expert_outputs, active_mask, eps=1e-6): # Advancing Expert Specialization for Better MoE method
-#     """
-#     expert_outputs: (B, E, D), with rows for inactive experts already zeroed
-#                     (i.e. x_tilde_ij = expert_j(x_i) * I{s_ij>0})
-#     active_mask:    (B, E) bool, True where s_ij > 0
-#     """
-#     sq_norm = (expert_outputs ** 2).sum(-1)                              # (B,E)
-#     dots = torch.einsum('bed,bfd->bef', expert_outputs, expert_outputs)  # (B,E,E), [b,j,k]
-#     denom = sq_norm.unsqueeze(1) + eps                                   # norm of k, broadcast over j
-#     proj_sq = (dots ** 2) / denom                                        # ||proj_k(x_j)||^2
+def orthogonality_loss_projection(expert_outputs, active_mask, eps=1e-6): # Advancing Expert Specialization for Better MoE method
+    """
+    expert_outputs: (B, E, D), with rows for inactive experts already zeroed
+                    (i.e. x_tilde_ij = expert_j(x_i) * I{s_ij>0})
+    active_mask:    (B, E) bool, True where s_ij > 0
+    """
+    sq_norm = (expert_outputs ** 2).sum(-1)                              # (B,E)
+    dots = torch.einsum('bed,bfd->bef', expert_outputs, expert_outputs)  # (B,E,E), [b,j,k]
+    denom = sq_norm.unsqueeze(1) + eps                                   # norm of k, broadcast over j
+    proj_sq = (dots ** 2) / denom                                        # ||proj_k(x_j)||^2
 
-#     eye = torch.eye(expert_outputs.size(1), dtype=torch.bool, device=expert_outputs.device)
-#     pair_mask = (active_mask.unsqueeze(2) & active_mask.unsqueeze(1)) & ~eye
-#     return (proj_sq * pair_mask).sum() / pair_mask.sum().clamp(min=1)
-# ortho proj doesn't work as well
-orthogonality_loss_function = orthogonality_loss_simple
+    eye = torch.eye(expert_outputs.size(1), dtype=torch.bool, device=expert_outputs.device)
+    pair_mask = (active_mask.unsqueeze(2) & active_mask.unsqueeze(1)) & ~eye
+    return (proj_sq * pair_mask).sum() / pair_mask.sum().clamp(min=1)
+
+orthogonality_loss_function = orthogonality_loss_projection
 
 _call_count = 0
 class _ExpertPrint(_Expert):
@@ -194,7 +198,7 @@ class GSoftmaxHarmonicGate(NaiveGate):
 
         gate_score = F.gumbel_softmax(gate_top_k_val, tau=self.tau, hard=(gumbel_off or not self.training))
 
-        if target is not None:
+        if target is not None: # kldiv
             # gate_score shape: (batch*seq, top_k) -> (batch*seq, num_experts)
             # Scatter top-k scores back into full expert dimension
             full_scores = torch.zeros(gate_score.shape[0], self.num_expert, device=gate_score.device)
@@ -207,7 +211,7 @@ class GSoftmaxHarmonicGate(NaiveGate):
                 target_distribution = F.softmax(self.target_logits, dim=0)  # target distribution is logits not probability so take softmax
                 if self.update_targets:
                     entropy = -(target_distribution * target_distribution.log()).sum()
-                    target_flops = torch.sum(torch.tensor(ratios, device=target_distribution.device) * target_distribution) if lower_flops else 0
+                    target_flops = torch.sum(torch.tensor(torch.tensor(ratios).repeat_interleave(factor), device=target_distribution.device) * target_distribution) if lower_flops else 0
                     kl_loss = F.kl_div(target_distribution.log(), actual_dist.detach(), reduction='sum')
                     avg_expert_idx = kl_loss + entropy_alpha * entropy + lower_flops_alpha * target_flops
                 else: 
@@ -221,8 +225,8 @@ class GSoftmaxHarmonicGate(NaiveGate):
         else:
             # Compute average expert index weighted by scores
             # Shape: gate_top_k_idx (batch*seq, top_k), gate_score (batch*seq, top_k)
-            factor = self.num_expert / len(ratios)  # Number of experts per ratio group
-            ratios_based_idx = (gate_top_k_idx / factor).int() # Convert to (0, 7)
+            this_gate_factor = self.num_expert / len(ratios)  # Number of experts per ratio group
+            ratios_based_idx = (gate_top_k_idx / this_gate_factor).int() # Convert to (0, 7)
             avg_expert_idx = (ratios_based_idx.float() * gate_score).sum(dim=-1).mean()
 
         # dummy loss
@@ -432,7 +436,6 @@ class FMoEHarmonic(FMoE):
 
         if trainbigrouter:
             if force_kalman:
-                factor =int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
                 self.gates = [gate(d_model, factor, world_size, top_k, gate_bias=gate_bias) for i in range(len(ratios))] # 4 experts per ratio
                 self.gates = nn.ModuleList(self.gates)
 
@@ -520,7 +523,6 @@ class FMoEHarmonic(FMoE):
                     device=moe_inp.device
                 )
                 # avg_expert_idx_list = []
-                factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
                 for i in range(len(ratios)):
                     kalman_start = percentile_intervals[i]
                     kalman_end = percentile_intervals[i+1]
@@ -555,7 +557,6 @@ class FMoEHarmonic(FMoE):
                     device=moe_inp.device
                 )
                 # avg_expert_idx_list = []
-                factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
                 for i in range(len(ratios)):
                     kalman_start = percentile_intervals[i]
                     kalman_end = percentile_intervals[i+1]
