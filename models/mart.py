@@ -5,7 +5,7 @@ import numpy as np
 
 from .prt import RT, RTNoEdgeInit
 from .hrt import HRT, HRTNoEdgeInit
-from utils import moe_n, moe_e, class_token, viz, class_token_harmonic_div_is_always_1, class_token_all_layers
+from utils import moe_n, moe_e, class_token, viz, class_token_harmonic_div_is_always_1, class_token_all_layers, graded_bias_ratio
 
 
 class MLP(nn.Module):
@@ -182,7 +182,9 @@ class MART(nn.Module):
         if viz:
             scores['gate_score'] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
             scores['top_k_idx'] = {'pair_n': [], 'pair_e': [], 'group_n': [], 'group_e': []}
+
         for i in range(self.args.num_layers):
+            graded_factor = (graded_bias_ratio)**(self.args.num_layers - i - 1)
             n_pair, e_pair, avg_expert_idx_pair, scores_pair = self.pair_encoders[i](n_pair, e_pair, return_edge=True, kalman_score=kalman_score)
             n_group, e_group, G, avg_expert_idx_group, scores_group = self.hyper_encoders[i](n_group, e_group, G, return_edge=True, kalman_score=kalman_score)
             if viz and (moe_n or moe_e):
@@ -194,7 +196,7 @@ class MART(nn.Module):
                 scores['top_k_idx']['pair_e'].append(scores_pair['top_k_idx_e'])
                 scores['top_k_idx']['group_n'].append(scores_group['top_k_idx_n'])
                 scores['top_k_idx']['group_e'].append(scores_group['top_k_idx_e'])
-            avg_expert_idx = avg_expert_idx + avg_expert_idx_group + avg_expert_idx_pair
+            avg_expert_idx = avg_expert_idx + graded_factor * (avg_expert_idx_group + avg_expert_idx_pair)
 
         num_moes = 0
         if moe_n: num_moes += 2

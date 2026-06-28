@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-viz = True # only possible during inference
+viz = False # only possible during inference
 
 #### MoE args ####
 moe_e = True
@@ -35,7 +35,8 @@ class_token_harmonic_div_is_always_1 = False
 #### Harmonic args #####
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
 harmonic_bias_loss = 1 # number (how much to weight it), or None
-print(f"Harmonic bias loss: {harmonic_bias_loss}")
+graded_bias_ratio = 1  ### set to 1 to remove
+
 # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
 # ratios = [1, 1, 1, 1, 1, 1] # equal ratios
 
@@ -55,13 +56,14 @@ targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this
 # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
 
 factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
-targets = torch.tensor(targets).repeat_interleave(factor) / factor
+if targets:
+    targets = torch.tensor(targets).repeat_interleave(factor) / factor
 
-learnable_targets = False # by default, use Expectation Maximization method
-# entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+learnable_targets = True # by default, use Expectation Maximization method
+entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
 
 lower_flops = False
-# lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
 
 # RETRY ALL:
 
@@ -121,7 +123,7 @@ def orthogonality_loss_projection(expert_outputs, active_mask, eps=1e-6): # Adva
     pair_mask = (active_mask.unsqueeze(2) & active_mask.unsqueeze(1)) & ~eye
     return (proj_sq * pair_mask).sum() / pair_mask.sum().clamp(min=1)
 
-orthogonality_loss_function = orthogonality_loss_projection
+orthogonality_loss_function = orthogonality_loss_simple
 
 _call_count = 0
 class _ExpertPrint(_Expert):
@@ -205,7 +207,6 @@ class GSoftmaxHarmonicGate(NaiveGate):
             full_scores.scatter_(1, gate_top_k_idx, gate_score)  # (batch*seq, num_experts)
 
             actual_dist = F.softmax(gate.view(-1, self.num_expert), dim=-1).mean(dim=0)  # (num_experts,), sums to 1
-            actual_dist = actual_dist.reshape((-1, len(ratios))).sum(dim=0)  # reshape to (experts_per_group, num_ratio_groups) and take mean of experts_per_group to get (num_ratio_groups,)
 
             if learnable_targets:  
                 target_distribution = F.softmax(self.target_logits, dim=0)  # target distribution is logits not probability so take softmax
