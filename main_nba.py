@@ -317,26 +317,31 @@ def test(epoch, model, loader, prof=None):
         nvtx.range_pop(); import sys; sys.exit(0) # stop measuring
 
     if viz and not measure_nvtx:
+        target_logits_final = {}
         if learnable_targets:
-            for encoder in (model.pair_encoders + model.hyper_encoders):  # however you access your gates
+            encoders = (model.pair_encoders + model.hyper_encoders)
+            encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
+            layer_numbers = list(range(len(model.pair_encoders))) * 2
+            encoder_strings = [f'{type_i}{layer_i}' for type_i, layer_i in zip(encoder_types, layer_numbers)]
+            for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
+                target_logits_final[encoder_str] = {}
                 for layer in encoder.layers:
-                    layer_moes = []
-                    if hasattr(layer, 'linear_net_n'): layer_moes.append(layer.linear_net_n)
-                    if hasattr(layer, 'linear_net2_e'): layer_moes.append(layer.linear_net2_e)
-                    for layer_moe in layer_moes:
-                        print('target_logits:', F.softmax(layer_moe.gate.target_logits).tolist(), id(layer_moe.gate.target_logits))
-                        # if layer_moe.gate.target_logits is not None:
-                        #     p = F.softmax(layer_moe.gate.target_logits, dim=0)
-                        #     entropy = -(p * p.log()).sum()
-                    print('\n')
- 
+                    if hasattr(layer, 'linear_net_n'):
+                        target_logits_final[encoder_str]['linear_net_n'] = torch.round(F.softmax(layer.linear_net_n.gate.target_logits)*100).int().tolist()
+                    if hasattr(layer, 'linear_net2_e'):
+                        target_logits_final[encoder_str]['linear_net2_e'] = torch.round(F.softmax(layer.linear_net2_e.gate.target_logits)*100).int().tolist()
+            for key0 in target_logits_final:
+                print(key0)
+                for key1 in target_logits_final[key0]:
+                    print(f'{key1}: {target_logits_final[key0][key1]}')
+
         if moe_e or moe_n:
             for score_type in ['gate_score', 'top_k_idx']:
                 for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
                     if len(scores[score_type][score_subtype]) == 0: continue
                     scores[score_type][score_subtype] = torch.cat(scores[score_type][score_subtype], dim=1).cpu()
         xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
-        data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds}
+        data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds, 'target_logits_final': target_logits_final}
         pickle.dump(data_dump, open('viz_scores_nba_redotarget_{}{}.pkl'.format(args.tag, 'attr' if attribute_dataset else ''), 'wb'))
 
 
