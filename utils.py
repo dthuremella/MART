@@ -59,11 +59,14 @@ factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
 if targets:
     targets = torch.tensor(targets).repeat_interleave(factor) / factor
 
-learnable_targets = True # by default, use Expectation Maximization method
-entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+learnable_targets = False # by default, use Expectation Maximization method
+# entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
 
 lower_flops = False
-lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+# lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+
+contrast_compress_embedding = None #0.01 # set to None if not using this
+contr_loss_only = False
 
 # RETRY ALL:
 
@@ -74,8 +77,16 @@ force_kalman = False
 # ### kalman fde    !!! remember to also change dataset in dataloader_nba.py !!!
 # percentile_intervals = [0.0035185401793569326, 0.5150180834531785, 0.7816558456420898, 1.3492942690849303, 2.0764161109924317, 3.2681657791137697, 48.253883361816406]  # get from running make_kalman_npy.py using fde, intervals=[0, 1, 2, 5, 10, 20, 100]
 
-### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
-percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
+# ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+# percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
+
+### Using Contrast and Compare 6 nearest neighbors avg ade (full trajectory) 
+### data in nba_train_full6nn.npy
+percentile_intervals = [3.2730432434314793, 4.094901000552989, 4.355116957776832, 4.874632709180113, 5.685417637150453, 7.184845270622374, 61.2362941570208]
+
+# ### Using Contrast and Compare 6 nearest neighbors avg ade (trained on history, compare variance of 6 closest future trajectories) 
+# ### data in nba_train_futdiv6nn.npy
+# percentile_intervals = [0.7412687208195053, 1.335515074761522, 1.4485841993934485, 1.6482041907273128, 1.8615215680678403, 2.2879495063057056, 43.43660839500594]
 
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
@@ -124,6 +135,67 @@ def orthogonality_loss_projection(expert_outputs, active_mask, eps=1e-6): # Adva
     return (proj_sq * pair_mask).sum() / pair_mask.sum().clamp(min=1)
 
 orthogonality_loss_function = orthogonality_loss_simple
+
+def contrastive_embedding_loss(features, embeddings, temp=0.1, base_temperature=0.07,
+                                pos_threshold=1.0, neg_threshold=3.0):
+    """
+    Contrastive loss where positive/negative pairs are defined by distance
+    in a 16-dim embedding space.
+
+    Args:
+        features:    (B, D) normalized feature vectors to be contrasted
+        embeddings:  (B, 16) trajectory embeddings defining similarity structure
+        temp:        temperature for contrastive logits
+        base_temperature: base temperature for loss scaling
+        pos_threshold:   euclidean distance below which pairs are positive
+        neg_threshold:   euclidean distance above which pairs are negative
+
+    Returns:
+        loss, mean positive count per anchor, mean negative count per anchor
+    """
+    device = features.device
+    batch_size = features.shape[0]
+    assert features.shape[0] == embeddings.shape[0], \
+        f"features batch size {features.shape[0]} != embeddings batch size {embeddings.shape[0]}"
+    # # --- Pairwise euclidean distances in embedding space ---
+    # # (B, B) via ||a - b||^2 = ||a||^2 + ||b||^2 - 2<a,b>
+    # emb_sq = (embeddings ** 2).sum(dim=1, keepdim=True)          # (B, 1)
+    # pairwise_dist = (emb_sq + emb_sq.T
+    #                  - 2.0 * embeddings @ embeddings.T).clamp(min=0).sqrt()  # (B, B)
+    pairwise_dist = torch.cdist(embeddings, embeddings, p=2)  # (B, B)
+
+    # --- Pair masks from embedding distance ---
+    mask_positives = (pairwise_dist < pos_threshold).float()   # close  → pull together
+    mask_negatives = (pairwise_dist > neg_threshold).float()   # far    → push apart
+    mask_neutral   = mask_positives + mask_negatives            # only these pairs participate
+
+    # --- Contrastive logits on features ---
+    anchor_dot_contrast = torch.div(features @ features.T, temp)   # (B, B)
+    logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+    logits = anchor_dot_contrast - logits_max.detach()             # numerical stability
+
+    # --- Remove self-contrast; restrict to non-neutral pairs ---
+    self_mask = torch.scatter(
+        torch.ones_like(mask_positives), 1,
+        torch.arange(batch_size).view(-1, 1).to(device), 0
+    )
+    logits_mask    = self_mask * mask_neutral     # (B, B): valid denominator entries
+    mask_positives = mask_positives * logits_mask # positives can't include self
+
+    # --- Log-softmax over valid pairs ---
+    exp_logits = torch.exp(logits) * logits_mask
+    log_prob   = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-20)
+
+    # --- Mean log-prob over positive pairs for each anchor ---
+    mean_log_prob_pos = (
+        (mask_positives * log_prob).sum(1)
+        / (mask_positives.sum(1) + 1e-20)
+    )
+
+    loss = -(temp / base_temperature) * mean_log_prob_pos
+    loss = loss.mean()
+
+    return loss, mask_positives.sum(1).mean(), mask_negatives.sum(1).mean()
 
 _call_count = 0
 class _ExpertPrint(_Expert):
@@ -731,7 +803,19 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
             ret["gate_score"] = gate_score.reshape(original_shape[0], -1, TOPK)
             ret["top_k_idx"] = top_k_idx.reshape(original_shape[0], -1, TOPK)
         else: output, avg_expert_idx = super().forward(inp, kalman_score=kalman_score)
-        ret["avg_expert_idx"] = avg_expert_idx
+        
+        contr_loss = 0
+        if contrast_compress_embedding and self.training:
+            if len(original_shape) > 3:
+                kalman_score = kalman_score.unsqueeze(-2).expand(list(original_shape[:-1]) + [kalman_score.shape[-1]]) # expand it to make it match all but the second to last dimension of input
+                kalman_score = kalman_score.flatten(0,2)
+            else:
+                kalman_score = kalman_score.flatten(0,1)
+            contr_loss, _, _ = contrastive_embedding_loss(inp, kalman_score)
+
+        ret["avg_expert_idx"] = avg_expert_idx 
+        if contrast_compress_embedding: ret["avg_expert_idx"] = ret["avg_expert_idx"] + contrast_compress_embedding * contr_loss
+        if contr_loss_only: ret["avg_expert_idx"] = contrast_compress_embedding * contr_loss
         return output.reshape(original_shape)
 
 

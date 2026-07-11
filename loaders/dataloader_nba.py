@@ -6,8 +6,9 @@ from torch.utils.data import Dataset
 ### kalman does not work with attribute dataset - it's either/or
 attribute_dataset = False
 use_kalman = True
-which_score = 'performance' # 'kalmanade', 'kalmanfde' or 'performance' --- only relevant if use_kalman is True, ignored otherwise
+which_score = 'full6nn' #  '16dim_embedding' 'full6nn' 'futdiv6nn' 'kalmanade', 'kalmanfde' or 'performance' --- only relevant if use_kalman is True, ignored otherwise
 
+use_kalman_test = False
 class NBADataset(Dataset):
     """Dataloder for the Trajectory datasets"""
     def __init__(
@@ -27,22 +28,22 @@ class NBADataset(Dataset):
                 data_root = './datasets/nba/nba_train.npy'
             if use_kalman:
                 data_root_kalman = './datasets/nba/nba_train_{}.npy'.format(which_score)
+                self.kalman_score = np.load(data_root_kalman) # (40000, 11) or (40000, 11, 16) if embedding
         else:
             if attribute_dataset:
                 data_root_players = './datasets/nba/testset_players_xy.pkl.npy'
                 data_root_ball = './datasets/nba/testset_ball_xy.pkl.npy'
             else:
                 data_root = './datasets/nba/nba_test.npy'
-            if use_kalman:
+            if use_kalman_test:
                 data_root_kalman = './datasets/nba/nba_test_{}.npy'.format(which_score)
+                self.kalman_score = np.load(data_root_kalman) # (40000, 11) or (40000, 11, 16) if embedding
 
         if attribute_dataset:
             self.trajs = (np.load(data_root_players), np.load(data_root_ball))
             self.trajs = np.concatenate(self.trajs, axis=-2)  # Concatenate 
         else:
             self.trajs = np.load(data_root) 
-        if use_kalman:
-            self.kalman_score = np.load(data_root_kalman) # (40000, 11)
         self.trajs /= (94/28) # Turn to meters
 
         if mode == 'train':
@@ -53,7 +54,7 @@ class NBADataset(Dataset):
             if use_kalman: self.kalman_score = self.kalman_score[end_train:37500]
         else:
             self.trajs = self.trajs[:12500]
-            if use_kalman: self.kalman_score = self.kalman_score[:12500]
+            if use_kalman_test: self.kalman_score = self.kalman_score[:12500]
 
         self.traj_abs = torch.from_numpy(self.trajs).type(torch.float)
         self.traj_abs = self.traj_abs.permute(0, 2, 1, 3)  #[N, 11, 30, 2]
@@ -65,7 +66,7 @@ class NBADataset(Dataset):
         past_traj = self.traj_abs[index, :, :self.obs_len, :]
         future_traj = self.traj_abs[index, :, self.obs_len:, :]
         out = [past_traj, future_traj]
-        if use_kalman:
+        if (use_kalman and self.mode in ['train', 'val']) or use_kalman_test:
             kalman_difficulty = self.kalman_score[index, :]
             out.append(kalman_difficulty)
         

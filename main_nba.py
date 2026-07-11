@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from utils import *
 from models.mart import MART, viz
-from loaders.dataloader_nba import NBADataset, attribute_dataset, use_kalman
+from loaders.dataloader_nba import NBADataset, attribute_dataset, use_kalman, use_kalman_test
 from fmoe.megatron import fmoefy
 import time
 from deepspeed.profiling.flops_profiler import FlopsProfiler
@@ -173,7 +173,7 @@ def train(epoch, model, optimizer, loader, train_EM_targets=False):
         if use_kalman:
             x_abs, y, kalman = data
             x_abs, y, kalman = x_abs.cuda(), y.cuda(), kalman.cuda()
-            if force_kalman: 
+            if force_kalman or contrast_compress_embedding: 
                 kalman_score = kalman   
         else:
             x_abs, y = data
@@ -239,7 +239,7 @@ def test(epoch, model, loader, prof=None):
         batch_count = 0
         for _, data in enumerate(loader):
             batch_count += 1
-            if use_kalman:
+            if (use_kalman and not args.test) or use_kalman_test:
                 x_abs, y, kalman = data
                 x_abs, y, kalman = x_abs.cuda(), y.cuda(), kalman.cuda()      
             else:
