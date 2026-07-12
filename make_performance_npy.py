@@ -5,7 +5,6 @@ python make_performance_npy.py
 """
 
 import os
-import random
 import argparse
 
 from csv import writer
@@ -19,56 +18,14 @@ from torch.optim import lr_scheduler
 
 from utils import *
 from models.mart import MART
-from loaders.dataloader_nba import NBADataset, attribute_dataset, use_kalman
+from loaders.dataloader_nba import NBADataset
+from loaders.dataloader_sdd import TrajectoryDataset
+from main_sdd import my_collate
 from fmoe.megatron import fmoefy
 
-def register_flop_hooks(model):
-    def count_expert_flops(module, input, output):
-        inp = input[0]
-        tokens = inp.shape[0]
-        d_model = inp.shape[1]
-        d_hidden = module.htoh4.out_feat
-        flops = 2 * tokens * (d_model * d_hidden + d_hidden * d_model)
-        module._flop_count += flops
-
-    def count_linear_flops(module, input, output):
-        inp = input[0]
-        tokens = inp.numel() // inp.shape[-1]
-        flops = 2 * tokens * inp.shape[-1] * output.shape[-1]
-        module._flop_count += flops
-
-    for name, module in model.named_modules():
-        if type(module).__name__ in ('_Expert', '_ExpertPrint'):
-            module._flop_count = 0
-            module.register_forward_hook(count_expert_flops)
-        elif type(module) == torch.nn.Linear:
-            module._flop_count = 0
-            module.register_forward_hook(count_linear_flops)
-
-def print_flops(model):
-    total_flops = sum(m._flop_count for m in model.modules() if hasattr(m, '_flop_count'))
-    print(f"\n=== FLOPs Report ===")
-    print(f"Total FLOPs: {total_flops:.3e}")
-    print("\nPer module breakdown:")
-    for name, module in model.named_modules():
-        if hasattr(module, '_flop_count') and module._flop_count > 0:
-            print(f"  {name}: {module._flop_count:.3e}")
-
-def get_total_flops(model):
-    return sum(m._flop_count for m in model.modules() if hasattr(m, '_flop_count'))
-
-def reset_flop_counts(model):
-    for m in model.modules():
-        if hasattr(m, '_flop_count'):
-            m._flop_count = 0
-
-def main(mode='train'):
-    if args.seed >= 0:
-        seed = args.seed
-        setup_seed(seed)
-    else:
-        seed = random.randint(0, 1000)
-        setup_seed(seed)
+def main_nba(mode='train'):
+    seed = args.seed
+    setup_seed(seed)
 
     print('[INFO] The seed is:', seed)
         
@@ -76,8 +33,6 @@ def main(mode='train'):
     loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, shuffle=False, num_workers=8)
 
     model = MART(opts).cuda()
-    # model = fmoefy(model, fmoe_num_experts=8)
-    # print(model)
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
 
     optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=1e-12)
@@ -95,14 +50,9 @@ def main(mode='train'):
     print('[INFO] Loading model from:', model_path)
     model_ckpt = torch.load(model_path)
     model.load_state_dict(model_ckpt['state_dict'], strict=True)
-    ade, fde = test(model_ckpt['epoch'], model, loader_test)
-    os.makedirs('results', exist_ok=True)
-    with open(os.path.join('./results', '{}_result.csv'.format(args.dataset)), 'w', newline='') as f:
-        csv_writer = writer(f)
-        csv_writer.writerow([os.path.basename(args.config).split('.')[0], ade, fde])
+    ade, fde = test_nba(model_ckpt['epoch'], model, loader_test)
 
-
-def test(epoch, model, loader):
+def test_nba(epoch, model, loader):
     model.eval()
     # for name, m in model.named_modules():
     #     if 'linear_net' in name:
@@ -114,12 +64,8 @@ def test(epoch, model, loader):
         batch_count = 0
         for _, data in enumerate(loader):
             batch_count += 1
-            if use_kalman:
-                x_abs, y, kalman = data
-                x_abs, y, kalman = x_abs.cuda(), y.cuda(), kalman.cuda()      
-            else:
-                x_abs, y = data
-                x_abs, y = x_abs.cuda(), y.cuda()       
+            x_abs, y = data
+            x_abs, y = x_abs.cuda(), y.cuda()       
             
             batch_size, num_agents, length, _ = x_abs.size()
 
@@ -179,11 +125,112 @@ def test(epoch, model, loader):
     print('[{}] minADE/minFDE (4.0s): {:.3f}/{:.3f}'.format(loader.dataset.mode.upper(), avg_meter['ade_4'] / avg_meter['counter'], avg_meter['fde_4'] / avg_meter['counter']))
     return avg_meter['fde_4'] / avg_meter['counter'], avg_meter['ade_4'] / avg_meter['counter']
 
+def main_sdd(mode='train'):
+    seed = args.seed
+    setup_seed(seed)
+
+    print('[INFO] The seed is:', seed)
+
+    dataset_test = TrajectoryDataset(mode=mode, scale=opts.scale, inputs=opts.inputs)
+    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, collate_fn=my_collate, shuffle=False, num_workers=8)
+
+    if 'reported' in args.tag:
+        opts.inputs = ['vel_x', 'vel_y']
+
+    model = MART(opts).cuda()
+    print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
+
+    optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=1e-12)
+
+    if opts.scheduler_type == 'StepLR':
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=opts.decay_step, gamma=opts.decay_gamma)
+    elif opts.scheduler_type == 'MultiStepLR':
+        scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=opts.milestones, gamma=opts.decay_gamma)
+
+    model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0] + args.tag)
+    os.makedirs(model_save_dir, exist_ok=True)
+
+    model_name = args.dataset + '_ckpt_best.pth'
+    model_path = os.path.join(model_save_dir, model_name)
+    print('[INFO] Loading model from:', model_path)
+    model_ckpt = torch.load(model_path)
+    model.load_state_dict(model_ckpt['state_dict'], strict=True)
+    ade, fde = test_sdd(model_ckpt['epoch'], model, loader_test, mode)
+
+def test_sdd(epoch, model, loader, mode):
+    model.eval()
+    avg_meter = {'epoch': epoch, 'ade': 0, 'fde': 0, 'counter': 0}
+    xs, ys, ypreds, batch_idxs = [], [], [], []
+
+    with torch.no_grad():
+        batch_count = 0
+        for i, data in enumerate(loader):
+            batch_count += 1
+            x_abs, y = data
+            x_abs, y = x_abs.cuda(), y.cuda()           
+            
+            batch_size, num_agents, length, _ = x_abs.size()
+
+            x_rel = torch.zeros_like(x_abs)
+            x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
+            x_rel[:, :, 0] = x_rel[:, :, 1]
+            
+            dims = 2 if 'reported' in args.tag else 3
+            y_pred, _, score = model(x_abs[...,:dims], x_rel[...,:dims])
+
+            if opts.pred_rel:
+                cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
+                y_pred = torch.cumsum(y_pred, dim=3) + cur_pos
+
+            x_flat = x_abs.flatten(0,1)
+            mask = x_flat[:,-1,-1].bool() # most current timestep needs to be valid to be counted
+            xs.append(x_flat[mask])
+            ys.append(y.flatten(0,1).clone()[mask])
+            ypreds.append(y_pred.flatten(0,1).clone()[mask])
+            batch_idx_flat = torch.arange(x_flat.shape[0], device=x_flat.device) // num_agents  
+            batch_idxs.append(batch_idx_flat[mask] + i * opts.batch_size)
+
+            y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
+            y = np.array(y.cpu()) # B, N, T, 2
+            y = y[:, :, None, :, :]
+            
+            mask = np.array(x_abs[:,:,-1,-1].cpu())
+            ade = np.sum(np.min(np.mean(np.linalg.norm(y_pred - y, axis=-1), axis=3), axis=2) * mask)
+            fde = np.sum(np.min(np.mean(np.linalg.norm(y_pred[:, :, :, -1:] - y[:, :, :, -1:], axis=-1), axis=3), axis=2) * mask)
+                        
+            avg_meter['ade'] += ade
+            avg_meter['fde'] += fde
+            
+            avg_meter['counter'] += mask.sum()
+    
+    ###### Calculate performance intervals and save ###########
+    xs, ys, ypreds, batch_idxs = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu(),  torch.cat(batch_idxs).cpu()
+    fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1), dim=1)[0][:,-1].cpu()
+    fdes /= opts.scale
+    scores = np.array(fdes)
+    intervals=[0,1,2,5,10,20,100]
+    print(f'Nth percentile: {intervals}')
+    performance_interval = np.percentile(scores, intervals)
+    print([performance_interval for performance_interval in performance_interval])
+
+    data_to = f'./datasets/stanford/{args.dataset}_{mode}_performance.npy'
+    scores_list = [scores[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
+
+    np.save(data_to, np.array(scores_list, dtype=object), allow_pickle=True)
+
+    avg_meter['ade'] /= opts.scale
+    avg_meter['fde'] /= opts.scale
+    
+    th = get_th(opts, model)
+    print('\n[{}][{}] Epoch {} th: {}'.format(args.dataset.upper(), mode, epoch, th))
+    print('[{}][{}] minADE/minFDE: {:.2f}/{:.2f}'.format(args.dataset.upper(), mode, avg_meter['ade'] / avg_meter['counter'], avg_meter['fde'] / avg_meter['counter']))
+    return avg_meter['fde'] / avg_meter['counter'], avg_meter['ade'] / avg_meter['counter']
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MART for Trajectory Prediction')
     parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
-    parser.add_argument('--dataset', type=str, default='nba', metavar='N', help='dataset name')
+    parser.add_argument('--dataset', type=str, default='', metavar='N', help='dataset name')
     parser.add_argument('--config', type=str, default='configs/mart_nba_reproduce.yaml', help='config path')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
@@ -196,6 +243,11 @@ if __name__ == "__main__":
     opts = load_config(args.config)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    for mode in ['train', 'test']:
+    for mode in ['test', 'train']:
         print(f'\n=== Evaluating {mode} set ===')
-        main(mode=mode)
+        if 'nba' in args.config:
+            args.dataset = 'nba'
+            main_nba(mode=mode)
+        elif 'sdd' in args.config:
+            args.dataset = 'sdd'
+            main_sdd(mode=mode)

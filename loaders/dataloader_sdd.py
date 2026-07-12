@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+use_kalman = False
+which_score = 'performance' 
 
 class TrajectoryDataset(Dataset):
     def __init__(
@@ -32,6 +34,10 @@ class TrajectoryDataset(Dataset):
                 self.traj.append(t)
         else:
             self.traj = traj_tmp
+
+        if use_kalman:
+            data_root_kalman = './datasets/stanford/sdd_{}_{}.npy'.format(mode, which_score)
+            self.kalman_score = np.load(data_root_kalman, allow_pickle=True)
         
         
     def __len__(self):
@@ -42,5 +48,9 @@ class TrajectoryDataset(Dataset):
         future_traj = self.traj[index][:, self.obs_len:] * self.scale
         past_traj = torch.from_numpy(past_traj).type(torch.float)
         future_traj = torch.from_numpy(future_traj).type(torch.float)
+        if use_kalman: # (use_kalman and self.mode in ['train', 'val']):
+            kalman_difficulty = self.kalman_score[index]
+            return [past_traj, future_traj, kalman_difficulty]
+
         
         return [past_traj, future_traj]

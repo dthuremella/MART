@@ -13,7 +13,7 @@ from torch.optim import lr_scheduler
 import torch.nn.functional as F
 
 from utils import *
-from models.mart import MART, viz
+from models.mart import MART
 from loaders.dataloader_nba import NBADataset, attribute_dataset, use_kalman, use_kalman_test
 from fmoe.megatron import fmoefy
 import time

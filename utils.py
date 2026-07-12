@@ -71,6 +71,7 @@ contr_loss_only = False
 # RETRY ALL:
 
 force_kalman = False
+# NBA DATASET: 
 # ### kalman ade    !!! remember to also change dataset in dataloader_nba.py !!!
 # percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using ade, intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
 
@@ -87,6 +88,10 @@ percentile_intervals = [3.2730432434314793, 4.094901000552989, 4.355116957776832
 # ### Using Contrast and Compare 6 nearest neighbors avg ade (trained on history, compare variance of 6 closest future trajectories) 
 # ### data in nba_train_futdiv6nn.npy
 # percentile_intervals = [0.7412687208195053, 1.335515074761522, 1.4485841993934485, 1.6482041907273128, 1.8615215680678403, 2.2879495063057056, 43.43660839500594]
+
+# SDD DATASET:
+### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+percentile_intervals = [0.0005252899136394262, 0.001785307307727635, 0.0017901447135955095, 0.001838789088651538, 0.2657089143991471, 1.111704444885254, 645.259033203125]
 
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
