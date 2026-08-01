@@ -8,6 +8,8 @@ import numpy as np
 from tqdm import tqdm
 from torch.utils.data import Dataset
 
+use_kalman = False
+which_score = 'performance' 
 
 def seq_collate(data):
 
@@ -237,6 +239,13 @@ class TrajectoryDataset(Dataset):
 
         pbar.close()
 
+        ### use_kalman
+        if use_kalman:
+            which_dataset = data_dir.split('/')[-2]
+            mode = data_dir.split('/')[-1]
+            data_root_kalman = './datasets/ethucy/{}_{}_{}.npy'.format(which_dataset, mode, which_score)
+            self.kalman_score = np.load(data_root_kalman, allow_pickle=True)
+
     def __len__(self):
         return self.num_seq
 
@@ -248,5 +257,9 @@ class TrajectoryDataset(Dataset):
         if self.return_index:
             frame_id = self.start_frame_id_list[start:end][0]
             return [past_traj, future_traj, frame_id]
+
+        if use_kalman: # (use_kalman and self.mode in ['train', 'val']):
+            kalman_difficulty = self.kalman_score[index]
+            return [past_traj, future_traj, kalman_difficulty]
         
         return [past_traj, future_traj]

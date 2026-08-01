@@ -14,6 +14,7 @@ from utils import *
 from models.mart import MART
 from loaders.dataloader_sdd import TrajectoryDataset, use_kalman
 import time
+import pickle
 
 measure_flops = False
 def register_flop_hooks(model):
@@ -112,10 +113,10 @@ def main():
 
     if not args.test:
         dataset_train = TrajectoryDataset(mode='train', scale=opts.scale, inputs=opts.inputs)
-        loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=opts.batch_size, collate_fn=my_collate_kalman if use_kalman else my_collate, shuffle=True, num_workers=0, drop_last=True)
+        loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=opts.batch_size, collate_fn=my_collate_kalman if use_kalman else my_collate, shuffle=True, num_workers=8, drop_last=True)
         
     dataset_test = TrajectoryDataset(mode='test', scale=opts.scale, inputs=opts.inputs)
-    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, collate_fn=my_collate if (args.test and not use_kalman) else my_collate_kalman, shuffle=False, num_workers=0)
+    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, collate_fn=my_collate if (args.test or not use_kalman) else my_collate_kalman, shuffle=False, num_workers=8)
 
     if 'reported' in args.tag:
         opts.inputs = ['vel_x', 'vel_y']
@@ -255,7 +256,7 @@ def train(epoch, model, optimizer, loader, train_EM_targets=False):
         else:
             loss += total_loss
 
-        if batch_count % opts.batch_size == 0: # or i == loader_len - 1:
+        if batch_count % opts.batch_size == 0 or i == loader_len - 1:
             loss = loss / divider
             is_first_loss = True
             
@@ -329,9 +330,13 @@ def test(epoch, model, loader):
                 ypreds.append(y_pred.flatten(0,1).clone()[mask])
                 if moe_e or moe_n:
                     for score_type in ['gate_score', 'top_k_idx']:
-                        for score_subtype in ['pair_n', 'pair_e', 'group_n', 'group_e']:
+                        for score_subtype in ['pair_n', 'group_n', 'group_e']:
                             if score[score_type][score_subtype][0] is None: continue
-                            scores[score_type][score_subtype].append(torch.stack(score[score_type][score_subtype]))
+                            padded_scores = torch.stack(score[score_type][score_subtype])
+                            padded_scores = padded_scores.permute(1,2,0,3)
+                            unpadded_scores = padded_scores.flatten(0,1).clone()[mask]
+                            unpadded_scores = unpadded_scores.permute(1,0,2)
+                            scores[score_type][score_subtype].append(unpadded_scores)
 
             y_pred = np.array(y_pred.cpu()) # B, N, 20, T, 2
             y = np.array(y.cpu()) # B, N, T, 2
@@ -349,7 +354,7 @@ def test(epoch, model, loader):
     t1 = time.time()
     print('INFO: Time taken for inference is :', t1 - t0)
 
-    if viz and not measure_nvtx:
+    if viz:
         target_logits_final = {}
         if learnable_targets:
             encoders = (model.pair_encoders + model.hyper_encoders)
@@ -383,7 +388,7 @@ def test(epoch, model, loader):
     th = get_th(opts, model)
     print('\n[{}][{}] Epoch {} th: {}'.format(args.dataset.upper(), 'TEST', epoch, th))
     print('[{}][{}] minADE/minFDE: {:.2f}/{:.2f}'.format(args.dataset.upper(), 'TEST', avg_meter['ade'] / avg_meter['counter'], avg_meter['fde'] / avg_meter['counter']))
-    if measure_flops: print('[{}] model FLOPs for one batch (size {}): {:.3f}'.format(loader.dataset.mode.upper(), batch_size, flops_per_batch))
+    if measure_flops: print('[{}] model FLOPs for one batch (size {}): {:.3f}'.format(args.dataset.upper(), batch_size, flops_per_batch))
     return avg_meter['fde'] / avg_meter['counter'], avg_meter['ade'] / avg_meter['counter']
 
 

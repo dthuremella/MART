@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 ### kalman does not work with attribute dataset - it's either/or
 attribute_dataset = False
 use_kalman = True
-which_score = 'full6nn' #  '16dim_embedding' 'full6nn' 'futdiv6nn' 'kalmanade', 'kalmanfde' or 'performance' --- only relevant if use_kalman is True, ignored otherwise
+which_score = 'learntarg0_01performance' #   'learntarg0_01performance' '16dim_embedding' 'full6nn' 'futdiv6nn' 'kalmanade', 'kalmanfde' or 'performance' --- only relevant if use_kalman is True, ignored otherwise
 
 use_kalman_test = False
 class NBADataset(Dataset):

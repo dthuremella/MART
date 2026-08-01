@@ -38,9 +38,9 @@ harmonic_bias_loss = 1 # number (how much to weight it), or None
 graded_bias_ratio = 1  ### set to 1 to remove
 
 # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
-# ratios = [1, 1, 1, 1, 1, 1] # equal ratios
+ratios = [1, 1, 1, 1, 1, 1] # equal ratios
 
-ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
+# ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
 # force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
 # long-tail (lt) ratios means:
 # .01*10+.01*5+.03*3+.05*2+.10*1+.8*1/2+1/4
@@ -52,7 +52,7 @@ ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
 # 4 experts with 5x the size for next 1%
 # 4 experts with 10x the size for best 1%
 
-targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+targets = None #[0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
 # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
 
 factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
@@ -60,17 +60,17 @@ if targets:
     targets = torch.tensor(targets).repeat_interleave(factor) / factor
 
 learnable_targets = False # by default, use Expectation Maximization method
-# entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+entropy_alpha = 0.01  # weight for the learnable targets loss, original is 0.01, effectively multiplied by harmoic_bias_loss
 
 lower_flops = False
-# lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
+lower_flops_alpha = 0.1  # weight for the lower flops loss, original is 0.01, effectively multiplied by harmoic_bias_loss
 
 contrast_compress_embedding = None #0.01 # set to None if not using this
 contr_loss_only = False
 
 # RETRY ALL:
 
-force_kalman = False
+force_kalman = True
 # NBA DATASET: 
 # ### kalman ade    !!! remember to also change dataset in dataloader_nba.py !!!
 # percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using ade, intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
@@ -81,19 +81,34 @@ force_kalman = False
 # ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
 # percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
 
-### Using Contrast and Compare 6 nearest neighbors avg ade (full trajectory) 
-### data in nba_train_full6nn.npy
-percentile_intervals = [3.2730432434314793, 4.094901000552989, 4.355116957776832, 4.874632709180113, 5.685417637150453, 7.184845270622374, 61.2362941570208]
+### Using learntarg0_01performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
+
+# ### Using Contrast and Compare 6 nearest neighbors avg ade (full trajectory) 
+# ### data in nba_train_full6nn.npy
+# percentile_intervals = [3.2730432434314793, 4.094901000552989, 4.355116957776832, 4.874632709180113, 5.685417637150453, 7.184845270622374, 61.2362941570208]
 
 # ### Using Contrast and Compare 6 nearest neighbors avg ade (trained on history, compare variance of 6 closest future trajectories) 
 # ### data in nba_train_futdiv6nn.npy
 # percentile_intervals = [0.7412687208195053, 1.335515074761522, 1.4485841993934485, 1.6482041907273128, 1.8615215680678403, 2.2879495063057056, 43.43660839500594]
 
-# SDD DATASET:
-### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
-percentile_intervals = [0.0005252899136394262, 0.001785307307727635, 0.0017901447135955095, 0.001838789088651538, 0.2657089143991471, 1.111704444885254, 645.259033203125]
+# # SDD DATASET:
+# ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+# percentile_intervals = [0.0005252899136394262, 0.001785307307727635, 0.0017901447135955095, 0.001838789088651538, 0.2657089143991471, 1.111704444885254, 645.259033203125]
 
 percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
+
+# # # ETH/UCY DATASET:
+# # ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+# percentile_intervals = {
+#     'eth': [0.0015440789284184575, 0.00967034692876041, 0.011681726854294538, 0.02088532457128167, 0.047185298055410385, 0.09336920827627182, 4.935998439788818],
+#     'hotel': [0.00037680062814615667, 0.004690605993382633, 0.007330192718654871, 0.012169155059382321, 0.030890640430152418, 0.08249613344669342, 4.859007358551025],
+#     'univ': [6.511926767416298e-05, 0.0020755451591685414, 0.002652326999232173, 0.004063171241432429, 0.008718226291239261, 0.03120241798460484, 3.268293619155884],
+#     'zara1': [0.0004946928238496184, 0.004071726435795426, 0.005534967221319675, 0.01399285849183798, 0.03268968090415001, 0.06850282996892929, 4.725627899169922],
+#     'zara2': [0.00029691029340028763, 0.004429054916836321, 0.007826658468693494, 0.021575147472321986, 0.0384039405733347, 0.090070441365242, 5.0315937995910645]
+# }
+# for key in percentile_intervals:
+#     percentile_intervals[key][0] = 0; percentile_intervals[key][-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
 ortho_weight = 0 # ortho simple or proj, only use with harmonic
 var_weight = 0 # only use with harmonic
@@ -294,6 +309,11 @@ class GSoftmaxHarmonicGate(NaiveGate):
                     avg_expert_idx = kl_loss + entropy_alpha * entropy + lower_flops_alpha * target_flops
                 else: 
                     avg_expert_idx = F.kl_div(actual_dist.log(), target_distribution.detach(), reduction='sum')
+
+            elif self.target_logits is not None: # we have learned targets from another model
+                # Adjust gate_score to match target distribution
+                target_distribution = torch.tensor(self.target_logits, device=gate_score.device).float() # we don't need to take softmax because the target we defined is already a probability
+                avg_expert_idx = F.kl_div(actual_dist.log(), target_distribution, reduction='sum')
 
             else:
                 # Adjust gate_score to match target distribution
@@ -602,8 +622,8 @@ class FMoEHarmonic(FMoE):
                 )
                 # avg_expert_idx_list = []
                 for i in range(len(ratios)):
-                    kalman_start = percentile_intervals[i]
-                    kalman_end = percentile_intervals[i+1]
+                    kalman_start = percentile_intervals[self.data][i] if isinstance(percentile_intervals, dict) else percentile_intervals[i]
+                    kalman_end = percentile_intervals[self.data][i+1] if isinstance(percentile_intervals, dict) else percentile_intervals[i+1]
 
                     inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
                     moe_inp_i = moe_inp[inds]
@@ -636,8 +656,8 @@ class FMoEHarmonic(FMoE):
                 )
                 # avg_expert_idx_list = []
                 for i in range(len(ratios)):
-                    kalman_start = percentile_intervals[i]
-                    kalman_end = percentile_intervals[i+1]
+                    kalman_start = percentile_intervals[self.data][i] if isinstance(percentile_intervals, dict) else percentile_intervals[i]
+                    kalman_end = percentile_intervals[self.data][i+1] if isinstance(percentile_intervals, dict) else percentile_intervals[i+1]
 
                     inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
                     gate_probs[inds, i*factor:(i+1)*factor] = torch.ones(factor, device=moe_inp.device) / factor # set target distribution for this group of experts to be uniform across the experts in the group

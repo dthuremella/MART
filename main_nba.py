@@ -23,6 +23,33 @@ import torch.cuda.nvtx as nvtx
 measure_nvtx = False 
 
 measure_flops = False
+
+### learned targ 0.01 targets (set to None otherwise)
+learned_targets = {'pair0': {'linear_net_n': [6, 8, 9, 6, 6, 6, 4, 5, 4, 3, 3, 5, 3, 4, 4, 4, 3, 2, 2, 4, 2, 2, 3, 3],
+'linear_net2_e': [6, 5, 8, 7, 3, 5, 5, 5, 4, 4, 4, 4, 3, 3, 7, 4, 2, 3, 2, 3, 4, 4, 2, 3]},
+'pair1':
+{'linear_net_n': [7, 11, 7, 6, 4, 4, 5, 5, 4, 3, 3, 4, 4, 5, 3, 4, 3, 2, 3, 2, 2, 3, 3, 3],
+'linear_net2_e': [9, 10, 8, 5, 5, 5, 6, 4, 2, 4, 4, 4, 4, 2, 3, 5, 2, 3, 2, 2, 2, 3, 4, 2]},
+'pair2':
+{'linear_net_n': [8, 7, 9, 6, 4, 5, 4, 5, 4, 4, 3, 4, 4, 4, 3, 3, 2, 3, 3, 3, 3, 3, 4, 3],
+'linear_net2_e': [8, 12, 10, 10, 3, 4, 3, 2, 4, 3, 3, 4, 3, 2, 3, 2, 2, 2, 3, 3, 3, 3, 4, 2]},
+'pair3':
+{'linear_net_n': [11, 5, 8, 8, 5, 4, 4, 4, 4, 4, 6, 4, 6, 3, 4, 4, 2, 2, 2, 2, 2, 2, 2, 2],
+'linear_net2_e': [16, 16, 12, 17, 4, 3, 5, 2, 4, 3, 3, 3, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1]},
+'group0':
+{'linear_net_n': [9, 8, 10, 9, 4, 4, 4, 5, 4, 4, 3, 3, 4, 4, 4, 3, 3, 3, 2, 1, 4, 2, 2, 3],
+'linear_net2_e': [10, 14, 5, 9, 4, 3, 4, 3, 3, 3, 3, 8, 4, 3, 5, 2, 2, 2, 2, 2, 2, 2, 3, 3]},
+'group1':
+{'linear_net_n': [4, 4, 6, 5, 4, 5, 4, 5, 4, 4, 4, 4, 4, 3, 4, 4, 5, 4, 4, 5, 3, 4, 4, 3],
+'linear_net2_e': [10, 7, 10, 13, 4, 5, 5, 7, 3, 3, 3, 3, 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 3, 2]},
+'group2':
+{'linear_net_n': [6, 6, 4, 9, 4, 3, 6, 4, 4, 4, 3, 4, 3, 4, 2, 4, 4, 4, 4, 4, 3, 4, 3, 3],
+'linear_net2_e': [11, 10, 10, 8, 4, 3, 4, 4, 3, 3, 3, 4, 4, 3, 3, 4, 2, 2, 2, 2, 2, 3, 3, 2]},
+'group3':
+{'linear_net_n': [5, 6, 5, 7, 4, 4, 5, 7, 3, 3, 4, 4, 3, 4, 3, 4, 3, 4, 3, 3, 5, 4, 3, 3],
+'linear_net2_e': [13, 8, 11, 14, 6, 4, 3, 4, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2]},
+}
+
 def register_flop_hooks(model):
     def count_expert_flops(module, input, output):
         inp = input[0]
@@ -63,6 +90,172 @@ def reset_flop_counts(model):
         if hasattr(m, '_flop_count'):
             m._flop_count = 0
 
+def init_expert_from_baselineffn(expert, ffn_weights, noise_scale=0.1):
+    w1, b1 = ffn_weights['w1'], ffn_weights.get('b1')  # [128, d_model], [128]
+    w2, b2 = ffn_weights['w2'], ffn_weights.get('b2')  # [d_model, 128], [d_model]
+
+    expert_hidden = expert.htoh4.out_feat        # fixed: was .weight.shape[0]
+    pretrained_hidden = w1.shape[0]
+
+    if expert_hidden <= pretrained_hidden:
+        idx = torch.randperm(pretrained_hidden)[:expert_hidden]
+    else:
+        reps = -(-expert_hidden // pretrained_hidden)
+        idx = torch.cat([torch.randperm(pretrained_hidden) for _ in range(reps)])[:expert_hidden]
+
+    w1_slice = w1[idx].clone()          # [expert_hidden, d_model]
+    w2_slice = w2[:, idx].clone()       # [d_model, expert_hidden]
+    b1_slice = b1[idx].clone() if b1 is not None else None
+    b2_slice = b2.clone() if b2 is not None else None
+
+    def noisy(t):
+        if t is None:
+            return None
+        if t.numel() <= 1:
+            return t.clone()
+        amp = t.std(unbiased=False)
+        return t + torch.randn_like(t) * amp * noise_scale
+
+    with torch.no_grad():
+        expert.htoh4.weight.copy_(noisy(w1_slice).unsqueeze(0))   # -> (1, expert_hidden, d_model)
+        expert.h4toh.weight.copy_(noisy(w2_slice).unsqueeze(0))   # -> (1, d_model, expert_hidden)
+
+        if b1_slice is not None:
+            expert.htoh4.bias.copy_(noisy(b1_slice).reshape(expert.htoh4.bias.shape))
+        if b2_slice is not None:
+            expert.h4toh.bias.copy_(noisy(b2_slice).reshape(expert.h4toh.bias.shape))
+
+def init_expert_from_pretrained_expert(expert, pretrained_htoh4_w, pretrained_htoh4_b,
+                                        pretrained_h4toh_w, pretrained_h4toh_b, noise_scale=0.1):
+    def noisy(t):
+        if t is None:
+            return None
+        if t.numel() <= 1:
+            return t.clone()
+        amp = t.std(unbiased=False)
+        return t + torch.randn_like(t) * amp * noise_scale
+
+    with torch.no_grad():
+        if expert.htoh4.weight.shape == pretrained_htoh4_w.shape:
+            expert.htoh4.weight.copy_(noisy(pretrained_htoh4_w))
+            expert.h4toh.weight.copy_(noisy(pretrained_h4toh_w))
+            if pretrained_htoh4_b is not None:
+                expert.htoh4.bias.copy_(noisy(pretrained_htoh4_b))
+            if pretrained_h4toh_b is not None:
+                expert.h4toh.bias.copy_(noisy(pretrained_h4toh_b))
+        else:
+            raise ValueError(
+                f'Shape mismatch: expert wants {expert.htoh4.weight.shape}, '
+                f'pretrained expert has {pretrained_htoh4_w.shape}. '
+                f'Use the slice/tile path instead if expert counts/sizes differ.'
+            )
+
+def load_pretrainedbaseline_and_init_moe(model, pretrained_path, noise_scale=0.1):
+    ckpt = torch.load(pretrained_path, map_location='cpu')
+    pretrained_state = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
+    model_state = model.state_dict()
+
+    moe_paths = {name for name, m in model.named_modules()
+                if isinstance(m, FMoETransformerMLPHarmonic)}
+
+    for p in moe_paths:
+        assert p.endswith('linear_net_n') or p.endswith('linear_net2_e'), \
+            f'Unexpected MoE-ified module: {p}'
+
+    # 1) Load everything that isn't part of a MoE block directly
+    #    (attention layers, norms, node2edge_mlp, decoder heads, etc.)
+    matched, skipped = {}, []
+    for k, v in pretrained_state.items():
+        if any(k.startswith(p + '.') for p in moe_paths):
+            continue
+        if k in model_state and model_state[k].shape == v.shape:
+            matched[k] = v
+        else:
+            skipped.append(k)
+    model.load_state_dict(matched, strict=False)
+    print(f'[INFO] Loaded {len(matched)} tensors directly, skipped {len(skipped)}')
+
+    # 2) For each MoE block, pull the pretrained Sequential FFN at that same
+    #    path and use it to init every expert
+    named = dict(model.named_modules())
+    for moe_path in moe_paths:
+        moe_module = named[moe_path]
+
+        w1_key, b1_key = f'{moe_path}.0.weight', f'{moe_path}.0.bias'
+        w2_key, b2_key = f'{moe_path}.2.weight', f'{moe_path}.2.bias'
+
+        if w1_key not in pretrained_state:
+            print(f'[WARN] No matching pretrained FFN for {moe_path}; left random-init')
+            continue
+
+        ffn_weights = {
+            'w1': pretrained_state[w1_key],
+            'b1': pretrained_state.get(b1_key),
+            'w2': pretrained_state[w2_key],
+            'b2': pretrained_state.get(b2_key),
+        }
+
+        for expert in moe_module.experts:
+            if type(expert).__name__ == '_IdentityExpert':
+                continue
+            init_expert_from_baselineffn(expert, ffn_weights, noise_scale=noise_scale)
+
+        print(f'[INFO] Init {len(moe_module.experts)} experts in {moe_path} '
+              f'(pretrained hidden={ffn_weights["w1"].shape[0]}, noise_scale={noise_scale})')
+
+    return model
+
+def load_pretrained_and_init_moe(model, pretrained_path, noise_scale=0.1):
+    ckpt = torch.load(pretrained_path, map_location='cpu')
+    pretrained_state = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
+    model_state = model.state_dict()
+
+    moe_paths = {name for name, m in model.named_modules()
+                 if isinstance(m, FMoETransformerMLPHarmonic)}
+
+    # 1) Direct load for everything NOT inside a MoE block
+    #    (attention, norms, shared branches, gates, decoder heads, etc.)
+    matched, skipped = {}, []
+    for k, v in pretrained_state.items():
+        if any(k.startswith(p + '.') for p in moe_paths):
+            continue
+        if k in model_state and model_state[k].shape == v.shape:
+            matched[k] = v
+        else:
+            skipped.append(k)
+    model.load_state_dict(matched, strict=False)
+    print(f'[INFO] Loaded {len(matched)} tensors directly, skipped {len(skipped)}')
+
+    # 2) Per-expert index-matched init for each MoE block
+    named = dict(model.named_modules())
+    for moe_path in moe_paths:
+        moe_module = named[moe_path]
+
+        for i, expert in enumerate(moe_module.experts):
+            if type(expert).__name__ == '_IdentityExpert':
+                continue
+
+            w1_key = f'{moe_path}.experts.{i}.htoh4.weight'
+            b1_key = f'{moe_path}.experts.{i}.htoh4.bias'
+            w2_key = f'{moe_path}.experts.{i}.h4toh.weight'
+            b2_key = f'{moe_path}.experts.{i}.h4toh.bias'
+
+            if w1_key not in pretrained_state:
+                print(f'[WARN] No pretrained weights for expert {i} in {moe_path}; left random-init')
+                continue
+
+            init_expert_from_pretrained_expert(
+                expert,
+                pretrained_state[w1_key], pretrained_state.get(b1_key),
+                pretrained_state[w2_key], pretrained_state.get(b2_key),
+                noise_scale=noise_scale,
+            )
+
+        print(f'[INFO] Init {len(moe_module.experts)} experts in {moe_path} '
+              f'from matched pretrained experts (noise_scale={noise_scale})')
+
+    return model
+
 def main():
     if args.seed >= 0:
         seed = args.seed
@@ -80,6 +273,27 @@ def main():
     loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, shuffle=False, num_workers=8)
 
     model = MART(opts).cuda()
+
+    if args.pretrained_path is not None:
+        if 'reproduce' in args.pretrained_path:
+            model = load_pretrainedbaseline_and_init_moe(model, args.pretrained_path,
+                                          noise_scale=args.expert_noise_scale)
+        else:   
+            model = load_pretrained_and_init_moe(model, args.pretrained_path,
+                                          noise_scale=args.expert_noise_scale)
+    if learned_targets is not None:
+        encoders = (model.pair_encoders + model.hyper_encoders)
+        encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
+        layer_numbers = list(range(len(model.pair_encoders))) * 2
+        encoder_strings = [f'{type_i}{layer_i}' for type_i, layer_i in zip(encoder_types, layer_numbers)]
+        for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
+            for layer in encoder.layers:
+                if hasattr(layer, 'linear_net_n'):
+                    layer.linear_net_n.gate.target_logits = learned_targets[encoder_str]['linear_net_n'].float() / 100
+                if hasattr(layer, 'linear_net2_e'):
+                    layer.linear_net2_e.gate.target_logits = learned_targets[encoder_str]['linear_net2_e'].float() / 100
+
+
     # model = fmoefy(model, fmoe_num_experts=8)
     # print(model)
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
@@ -363,7 +577,10 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
     parser.add_argument("--test", action='store_true')
-
+    parser.add_argument('--pretrained_path', type=str, default=None,
+                        help='path to pretrained (dense) checkpoint to init MoE experts from')
+    parser.add_argument('--expert_noise_scale', type=float, default=0.1,
+                     help='fraction of pretrained weight std to add as init noise')
     args = parser.parse_args()
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   

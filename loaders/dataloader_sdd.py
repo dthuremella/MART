@@ -48,9 +48,9 @@ class TrajectoryDataset(Dataset):
         future_traj = self.traj[index][:, self.obs_len:] * self.scale
         past_traj = torch.from_numpy(past_traj).type(torch.float)
         future_traj = torch.from_numpy(future_traj).type(torch.float)
+
         if use_kalman: # (use_kalman and self.mode in ['train', 'val']):
             kalman_difficulty = self.kalman_score[index]
             return [past_traj, future_traj, kalman_difficulty]
-
         
         return [past_traj, future_traj]
