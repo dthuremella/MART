@@ -22,33 +22,7 @@ import torch.cuda.nvtx as nvtx
 
 measure_nvtx = False 
 
-measure_flops = False
-
-### learned targ 0.01 targets (set to None otherwise)
-learned_targets = {'pair0': {'linear_net_n': [6, 8, 9, 6, 6, 6, 4, 5, 4, 3, 3, 5, 3, 4, 4, 4, 3, 2, 2, 4, 2, 2, 3, 3],
-'linear_net2_e': [6, 5, 8, 7, 3, 5, 5, 5, 4, 4, 4, 4, 3, 3, 7, 4, 2, 3, 2, 3, 4, 4, 2, 3]},
-'pair1':
-{'linear_net_n': [7, 11, 7, 6, 4, 4, 5, 5, 4, 3, 3, 4, 4, 5, 3, 4, 3, 2, 3, 2, 2, 3, 3, 3],
-'linear_net2_e': [9, 10, 8, 5, 5, 5, 6, 4, 2, 4, 4, 4, 4, 2, 3, 5, 2, 3, 2, 2, 2, 3, 4, 2]},
-'pair2':
-{'linear_net_n': [8, 7, 9, 6, 4, 5, 4, 5, 4, 4, 3, 4, 4, 4, 3, 3, 2, 3, 3, 3, 3, 3, 4, 3],
-'linear_net2_e': [8, 12, 10, 10, 3, 4, 3, 2, 4, 3, 3, 4, 3, 2, 3, 2, 2, 2, 3, 3, 3, 3, 4, 2]},
-'pair3':
-{'linear_net_n': [11, 5, 8, 8, 5, 4, 4, 4, 4, 4, 6, 4, 6, 3, 4, 4, 2, 2, 2, 2, 2, 2, 2, 2],
-'linear_net2_e': [16, 16, 12, 17, 4, 3, 5, 2, 4, 3, 3, 3, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1]},
-'group0':
-{'linear_net_n': [9, 8, 10, 9, 4, 4, 4, 5, 4, 4, 3, 3, 4, 4, 4, 3, 3, 3, 2, 1, 4, 2, 2, 3],
-'linear_net2_e': [10, 14, 5, 9, 4, 3, 4, 3, 3, 3, 3, 8, 4, 3, 5, 2, 2, 2, 2, 2, 2, 2, 3, 3]},
-'group1':
-{'linear_net_n': [4, 4, 6, 5, 4, 5, 4, 5, 4, 4, 4, 4, 4, 3, 4, 4, 5, 4, 4, 5, 3, 4, 4, 3],
-'linear_net2_e': [10, 7, 10, 13, 4, 5, 5, 7, 3, 3, 3, 3, 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 3, 2]},
-'group2':
-{'linear_net_n': [6, 6, 4, 9, 4, 3, 6, 4, 4, 4, 3, 4, 3, 4, 2, 4, 4, 4, 4, 4, 3, 4, 3, 3],
-'linear_net2_e': [11, 10, 10, 8, 4, 3, 4, 4, 3, 3, 3, 4, 4, 3, 3, 4, 2, 2, 2, 2, 2, 3, 3, 2]},
-'group3':
-{'linear_net_n': [5, 6, 5, 7, 4, 4, 5, 7, 3, 3, 4, 4, 3, 4, 3, 4, 3, 4, 3, 3, 5, 4, 3, 3],
-'linear_net2_e': [13, 8, 11, 14, 6, 4, 3, 4, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2]},
-}
+measure_flops = True
 
 def register_flop_hooks(model):
     def count_expert_flops(module, input, output):
@@ -281,7 +255,7 @@ def main():
         else:   
             model = load_pretrained_and_init_moe(model, args.pretrained_path,
                                           noise_scale=args.expert_noise_scale)
-    if learned_targets is not None:
+    if per_expert_percentile_int:
         encoders = (model.pair_encoders + model.hyper_encoders)
         encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
         layer_numbers = list(range(len(model.pair_encoders))) * 2
@@ -289,9 +263,12 @@ def main():
         for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
             for layer in encoder.layers:
                 if hasattr(layer, 'linear_net_n'):
-                    layer.linear_net_n.gate.target_logits = learned_targets[encoder_str]['linear_net_n'].float() / 100
+                    layer.linear_net_n.layername = encoder_str
+                    layer.linear_net_n.transformertype = 'linear_net_n'
                 if hasattr(layer, 'linear_net2_e'):
-                    layer.linear_net2_e.gate.target_logits = learned_targets[encoder_str]['linear_net2_e'].float() / 100
+                    layer.linear_net2_e.layername = encoder_str
+                    layer.linear_net2_e.transformertype = 'linear_net2_e'
+
 
 
     # model = fmoefy(model, fmoe_num_experts=8)
@@ -484,7 +461,7 @@ def test(epoch, model, loader, prof=None):
                     flops_per_batch = get_total_flops(model)
                     if args.test:
                         print_flops(model)
-                        import sys; sys.exit(0)
+                        # import sys; sys.exit(0)
 
             if viz:
                 if moe_e or moe_n:

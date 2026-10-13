@@ -24,6 +24,37 @@ from loaders.dataloader_eth import TrajectoryDataset as ETHTrajectoryDataset
 from main_sdd import my_collate
 from fmoe.megatron import fmoefy
 
+# intervals=[0,1,2,5,10,20,100]
+intervals = [0, 80, 90, 95, 98, 99, 100]
+
+learned_targets = None
+# learned_targets = pickle.load(open('datasets/nba/nba_test_learned_targets0_01intervals.pkl', 'rb'))
+# learned_targets = {'pair0': {'linear_net_n': [6, 8, 9, 6, 6, 6, 4, 5, 4, 3, 3, 5, 3, 4, 4, 4, 3, 2, 2, 4, 2, 2, 3, 3],
+# 'linear_net2_e': [6, 5, 8, 7, 3, 5, 5, 5, 4, 4, 4, 4, 3, 3, 7, 4, 2, 3, 2, 3, 4, 4, 2, 3]},
+# 'pair1':
+# {'linear_net_n': [7, 11, 7, 6, 4, 4, 5, 5, 4, 3, 3, 4, 4, 5, 3, 4, 3, 2, 3, 2, 2, 3, 3, 3],
+# 'linear_net2_e': [9, 10, 8, 5, 5, 5, 6, 4, 2, 4, 4, 4, 4, 2, 3, 5, 2, 3, 2, 2, 2, 3, 4, 2]},
+# 'pair2':
+# {'linear_net_n': [8, 7, 9, 6, 4, 5, 4, 5, 4, 4, 3, 4, 4, 4, 3, 3, 2, 3, 3, 3, 3, 3, 4, 3],
+# 'linear_net2_e': [8, 12, 10, 10, 3, 4, 3, 2, 4, 3, 3, 4, 3, 2, 3, 2, 2, 2, 3, 3, 3, 3, 4, 2]},
+# 'pair3':
+# {'linear_net_n': [11, 5, 8, 8, 5, 4, 4, 4, 4, 4, 6, 4, 6, 3, 4, 4, 2, 2, 2, 2, 2, 2, 2, 2],
+# 'linear_net2_e': [16, 16, 12, 17, 4, 3, 5, 2, 4, 3, 3, 3, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1]},
+# 'group0':
+# {'linear_net_n': [9, 8, 10, 9, 4, 4, 4, 5, 4, 4, 3, 3, 4, 4, 4, 3, 3, 3, 2, 1, 4, 2, 2, 3],
+# 'linear_net2_e': [10, 14, 5, 9, 4, 3, 4, 3, 3, 3, 3, 8, 4, 3, 5, 2, 2, 2, 2, 2, 2, 2, 3, 3]},
+# 'group1':
+# {'linear_net_n': [4, 4, 6, 5, 4, 5, 4, 5, 4, 4, 4, 4, 4, 3, 4, 4, 5, 4, 4, 5, 3, 4, 4, 3],
+# 'linear_net2_e': [10, 7, 10, 13, 4, 5, 5, 7, 3, 3, 3, 3, 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 3, 2]},
+# 'group2':
+# {'linear_net_n': [6, 6, 4, 9, 4, 3, 6, 4, 4, 4, 3, 4, 3, 4, 2, 4, 4, 4, 4, 4, 3, 4, 3, 3],
+# 'linear_net2_e': [11, 10, 10, 8, 4, 3, 4, 4, 3, 3, 3, 4, 4, 3, 3, 4, 2, 2, 2, 2, 2, 3, 3, 2]},
+# 'group3':
+# {'linear_net_n': [5, 6, 5, 7, 4, 4, 5, 7, 3, 3, 4, 4, 3, 4, 3, 4, 3, 4, 3, 3, 5, 4, 3, 3],
+# 'linear_net2_e': [13, 8, 11, 14, 6, 4, 3, 4, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2]},
+# }
+
+
 def main_nba(mode='train'):
     seed = args.seed
     setup_seed(seed)
@@ -112,30 +143,50 @@ def test_nba(epoch, model, loader):
     fdes = torch.min(torch.linalg.norm((ys.unsqueeze(2).expand(ypreds.shape) - ypreds), dim=-1), dim=2)[0][:,:,-1].cpu()
     arr = np.array(fdes)
 
-    data_to = f'./datasets/{args.dataset}/{args.dataset}_{loader.dataset.mode}_{args.epithet}performance.npy'
-    np.save(data_to, arr)
-    intervals=[0,1,2,5,10,20,100]
-    print(f'Nth percentile: {intervals}')
-    performance_interval = np.percentile(arr, intervals)
-    print([performance_interval for performance_interval in performance_interval])
+    data_to = f'./datasets/{args.dataset}/{args.dataset}_{loader.dataset.mode}_{args.epithet}performance_redoint.npy'
 
-    if learnable_targets:
-        target_logits_final = {}
-        encoders = (model.pair_encoders + model.hyper_encoders)
-        encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
-        layer_numbers = list(range(len(model.pair_encoders))) * 2
-        encoder_strings = [f'{type_i}{layer_i}' for type_i, layer_i in zip(encoder_types, layer_numbers)]
-        for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
-            target_logits_final[encoder_str] = {}
-            for layer in encoder.layers:
-                if hasattr(layer, 'linear_net_n'):
-                    target_logits_final[encoder_str]['linear_net_n'] = torch.round(F.softmax(layer.linear_net_n.gate.target_logits)*100).int().tolist()
-                if hasattr(layer, 'linear_net2_e'):
-                    target_logits_final[encoder_str]['linear_net2_e'] = torch.round(F.softmax(layer.linear_net2_e.gate.target_logits)*100).int().tolist()
-        for key0 in target_logits_final:
-            print(key0)
-            for key1 in target_logits_final[key0]:
-                print(f'{key1}: {target_logits_final[key0][key1]}')
+    if learned_targets:
+        percentiles = {}
+        for layername in learned_targets.keys():
+            percentiles[layername] = {}
+            for transformertype in learned_targets[layername].keys():
+                cumsum = np.array(learned_targets[layername][transformertype].detach().cpu()).cumsum()
+                cumsum[-1] = 100
+                learned_intervals = np.insert(cumsum, 0, 0)
+                try:
+                    percentiles[layername][transformertype] = np.percentile(arr, learned_intervals)
+                except:
+                    import pdb; pdb.set_trace()
+        filename = data_to[:-23] + '.pkl'
+        pickle.dump(percentiles, open(filename, 'wb'))
+
+    else:
+        np.save(data_to, arr)
+        print(f'[{args.dataset}] Nth percentile: {intervals}')
+        performance_interval = np.percentile(arr, intervals)
+        print([performance_interval for performance_interval in performance_interval])
+
+        if learnable_targets:
+            filename = data_to[:-23] + 'intervals.pkl'
+
+            target_logits_final = {}
+            encoders = (model.pair_encoders + model.hyper_encoders)
+            encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
+            layer_numbers = list(range(len(model.pair_encoders))) * 2
+            encoder_strings = [f'{type_i}{layer_i}' for type_i, layer_i in zip(encoder_types, layer_numbers)]
+            for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
+                target_logits_final[encoder_str] = {}
+                for layer in encoder.layers:
+                    if hasattr(layer, 'linear_net_n'):
+                        target_logits_final[encoder_str]['linear_net_n'] = F.softmax(layer.linear_net_n.gate.target_logits)*100
+                    if hasattr(layer, 'linear_net2_e'):
+                        target_logits_final[encoder_str]['linear_net2_e'] = F.softmax(layer.linear_net2_e.gate.target_logits)*100
+            pickle.dump(target_logits_final, open(filename, 'wb'))
+
+            # for key0 in target_logits_final:
+            #     print(key0)
+            #     for key1 in target_logits_final[key0]:
+            #         print(f'{key1}: {target_logits_final[key0][key1]}')
 
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
@@ -228,12 +279,11 @@ def test_sdd(epoch, model, loader, mode):
     fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1), dim=1)[0][:,-1].cpu()
     fdes /= opts.scale
     scores = np.array(fdes)
-    intervals=[0,1,2,5,10,20,100]
-    print(f'Nth percentile: {intervals}')
+    print(f'[{args.dataset}] Nth percentile: {intervals}')
     performance_interval = np.percentile(scores, intervals)
     print([performance_interval for performance_interval in performance_interval])
 
-    data_to = f'./datasets/stanford/{args.dataset}_{mode}_{args.epithet}performance.npy'
+    data_to = f'./datasets/stanford/{args.dataset}_{mode}_{args.epithet}performance_redoint.npy'
     scores_list = [scores[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
 
     np.save(data_to, np.array(scores_list, dtype=object), allow_pickle=True)
@@ -348,12 +398,11 @@ def test_eth(epoch, model, loader, mode):
     xs, ys, ypreds, batch_idxs = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu(),  torch.cat(batch_idxs).cpu()
     fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1), dim=1)[0][:,-1].cpu()
     scores = np.array(fdes)
-    intervals=[0,1,2,5,10,20,100]
-    print(f'Nth percentile: {intervals}')
+    print(f'[{args.dataset}] Nth percentile: {intervals}')
     performance_interval = np.percentile(scores, intervals)
     print([performance_interval for performance_interval in performance_interval])
 
-    data_to = f'./datasets/ethucy/{args.dataset}_{mode}_{args.epithet}performance.npy'
+    data_to = f'./datasets/ethucy/{args.dataset}_{mode}_{args.epithet}performance_redoint.npy'
     scores_list = [scores[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
 
     np.save(data_to, np.array(scores_list, dtype=object), allow_pickle=True)

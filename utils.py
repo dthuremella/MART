@@ -21,7 +21,7 @@ viz = False # only possible during inference
 #### MoE args ####
 moe_e = True
 moe_n = True
-NUM_EXPERTS = 24
+NUM_EXPERTS = 32
 TOPK = 1
 SHARED = 1
 
@@ -32,30 +32,68 @@ class_token = False # only done for second two layers, need to use even_harmonic
 class_token_all_layers = False
 class_token_harmonic_div_is_always_1 = False
 
-#### Harmonic args #####
+# #### Harmonic args #####
+# even_harmonic = False  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
+# harmonic_bias_loss = 0 # 1 # number (how much to weight it), or None
+# graded_bias_ratio = 1  ### set to 1 to remove
+
+# # How much compute should each expert get?
+# # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
+# ratios = None # [1, 1, 1, 1, 1, 1] # equal ratios
+# # ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
+# # force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
+# # long-tail (lt) ratios means:
+# # .01*10+.01*5+.03*3+.05*2+.10*1+.8*1/2+1/4
+# # one shared expert, 1/4 the size
+# # 4 experts with 1/2 the size for worst 80%
+# # 4 experts with 1x the size for next 10%
+# # 4 experts with 2x the size for next 5%
+# # 4 experts with 3x the size for next 3%
+# # 4 experts with 5x the size for next 1%
+# # 4 experts with 10x the size for best 1%
+
+# targets = None # [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+# # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
+
+# #### -kldiv-
+# ratios = [1, 1, 1, 1, 1, 1] # equal ratios
+# targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+# ratios = [1, 1, 1, 1, 1, 1] # equal ratios
+# targets = [0.80, 0.115, 0.043, 0.021, 0.011, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+
+# # x16 split
+# ratios = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] # equal ratios
+# # ratios = [1.0/2, 1, 2, 3, 5, 7, 8, 10] # lt ratios
+# targets = [0.40, 0.167, 0.099, 0.068, 0.05, 0.038, 0.032, 0.026, 0.023, 0.019, 0.017, 0.015, 0.013, 0.012, 0.011, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+
+# # x8 split
+# ratios = [1, 1, 1, 1, 1, 1, 1, 1] # equal ratios
+# # ratios = [1.0/2, 1, 2, 3, 5, 7, 8, 10] # lt ratios
+# targets = [0.80, 0.094, 0.039, 0.022, 0.014, 0.011, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+
+# # x4 split
+# ratios = [1, 1, 1, 1] # equal ratios
+# # ratios = [1.0/2, 1, 5, 10] # lt ratios
+# targets = [0.80, 0.133, 0.057, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+
+# x2 split
+ratios = [1,1] #equal ratios
+# ratios = [1.0/2, 3] # lt ratios
+targets = [0.80, 0.20]
+
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
 harmonic_bias_loss = 1 # number (how much to weight it), or None
 graded_bias_ratio = 1  ### set to 1 to remove
 
-# ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
-ratios = [1, 1, 1, 1, 1, 1] # equal ratios
-
+# #### -kldiv-ltratio
 # ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
-# force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
-# long-tail (lt) ratios means:
-# .01*10+.01*5+.03*3+.05*2+.10*1+.8*1/2+1/4
-# one shared expert, 1/4 the size
-# 4 experts with 1/2 the size for worst 80%
-# 4 experts with 1x the size for next 10%
-# 4 experts with 2x the size for next 5%
-# 4 experts with 3x the size for next 3%
-# 4 experts with 5x the size for next 1%
-# 4 experts with 10x the size for best 1%
+# targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+# even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
+# harmonic_bias_loss = 1 # number (how much to weight it), or None
+# graded_bias_ratio = 1  ### set to 1 to remove
 
-targets = None #[0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
-# targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
-
-factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
+if ratios:
+    factor = int(NUM_EXPERTS / len(ratios)) # Number of experts per ratio group
 if targets:
     targets = torch.tensor(targets).repeat_interleave(factor) / factor
 
@@ -70,45 +108,53 @@ contr_loss_only = False
 
 # RETRY ALL:
 
-force_kalman = True
-# NBA DATASET: 
-# ### kalman ade    !!! remember to also change dataset in dataloader_nba.py !!!
-# percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371] # get from running make_kalman_npy.py using ade, intervals first 0-1%, 1-2%, 2-5%, 5-10%, 10-20%, 20-100%
+force_kalman = False
+# # NBA DATASET:
+# # ### kalmanade    !!! remember to also change dataset in dataloader_nba.py !!!
+# # percentile_intervals = [0.003353466745465994, 0.39871204137802124, 0.5496575403213501, 0.8367234110832215, 1.171858811378479, 1.7117342948913574, 26.64961814880371]                                                             
 
-# ### kalman fde    !!! remember to also change dataset in dataloader_nba.py !!!
-# percentile_intervals = [0.0035185401793569326, 0.5150180834531785, 0.7816558456420898, 1.3492942690849303, 2.0764161109924317, 3.2681657791137697, 48.253883361816406]  # get from running make_kalman_npy.py using fde, intervals=[0, 1, 2, 5, 10, 20, 100]
+# # ### kalmanfde    !!! remember to also change dataset in dataloader_nba.py !!!
+# # percentile_intervals = [0.0035185401793569326, 0.5150180834531785, 0.7816558456420898, 1.3492942690849303, 2.0764161109924317, 3.2681657791137697, 48.253883361816406]
 
-# ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
-# percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
+# # ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+# # percentile_intervals = [0.0018995911814272404, 1.2146420001983642, 1.5741672396659852, 1.9585230767726898, 2.544026513099671, 3.076786060333252, 16.41219139099121]
 
-### Using learntarg0_01performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
-percentile_intervals = [0.0018995911814272404, 0.07922831892967223, 0.11256792053580283, 0.1811295658349991, 0.2629622370004654, 0.3889003813266754, 16.41219139099121]
+# # ### Using Contrast and Compare 6 nearest neighbors avg ade (full trajectory) 
+# # ### data in nba_train_full6nn.npy
+# # percentile_intervals = [3.2730432434314793, 23.491016846324847, 29.5482214439057, 33.87974555622596, 38.20632011843093, 40.88704181532344, 61.2362941570208]
 
-# ### Using Contrast and Compare 6 nearest neighbors avg ade (full trajectory) 
-# ### data in nba_train_full6nn.npy
-# percentile_intervals = [3.2730432434314793, 4.094901000552989, 4.355116957776832, 4.874632709180113, 5.685417637150453, 7.184845270622374, 61.2362941570208]
+# # ### Using Contrast and Compare 6 nearest neighbors avg ade (trained on history, compare variance of 6 closest future trajectories) 
+# # ### data in nba_train_futdiv6nn.npy
+# # percentile_intervals = [0.7412687208195053, 7.133890596161108, 9.81603113735656, 12.036313810288503, 14.49849087906924, 16.113316191233174, 43.43660839500594]
 
-# ### Using Contrast and Compare 6 nearest neighbors avg ade (trained on history, compare variance of 6 closest future trajectories) 
-# ### data in nba_train_futdiv6nn.npy
-# percentile_intervals = [0.7412687208195053, 1.335515074761522, 1.4485841993934485, 1.6482041907273128, 1.8615215680678403, 2.2879495063057056, 43.43660839500594]
+# # ### Using learntarg0_01performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+# # percentile_intervals = [0.0006896614795550704, 1.1733877897262575, 1.5280136942863471, 1.9041935205459595, 2.4795613908767713, 2.998161511421206, 15.021160125732422]
 
 # # SDD DATASET:
 # ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
-# percentile_intervals = [0.0005252899136394262, 0.001785307307727635, 0.0017901447135955095, 0.001838789088651538, 0.2657089143991471, 1.111704444885254, 645.259033203125]
+# percentile_intervals = [0.0005607361090369523, 15.458650779724124, 22.972811126708983, 31.37913904190063, 44.450125274658106, 60.104569511413644, 667.2288208007812]                                                             
 
-percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
+# percentile_intervals[0] = 0; percentile_intervals[-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
-# # # ETH/UCY DATASET:
-# # ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
-# percentile_intervals = {
-#     'eth': [0.0015440789284184575, 0.00967034692876041, 0.011681726854294538, 0.02088532457128167, 0.047185298055410385, 0.09336920827627182, 4.935998439788818],
-#     'hotel': [0.00037680062814615667, 0.004690605993382633, 0.007330192718654871, 0.012169155059382321, 0.030890640430152418, 0.08249613344669342, 4.859007358551025],
-#     'univ': [6.511926767416298e-05, 0.0020755451591685414, 0.002652326999232173, 0.004063171241432429, 0.008718226291239261, 0.03120241798460484, 3.268293619155884],
-#     'zara1': [0.0004946928238496184, 0.004071726435795426, 0.005534967221319675, 0.01399285849183798, 0.03268968090415001, 0.06850282996892929, 4.725627899169922],
-#     'zara2': [0.00029691029340028763, 0.004429054916836321, 0.007826658468693494, 0.021575147472321986, 0.0384039405733347, 0.090070441365242, 5.0315937995910645]
-# }
-# for key in percentile_intervals:
-#     percentile_intervals[key][0] = 0; percentile_intervals[key][-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
+# # ETH/UCY DATASET:
+# ### Using baseline performance instead of kalman:  !!! remember to also change dataset in dataloader_nba.py !!!
+percentile_intervals = {
+    'eth': [0.0015440789284184575, 0.5461996793746948, 0.7621325254440308, 1.0001504719257355, 1.3898370385169976, 1.7062244832515707, 4.935998439788818],
+    'hotel': [0.00037680062814615667, 0.4953445494174957, 0.6754838645458222, 0.8952180415391922, 1.2448285436630249, 1.5452530097961419, 4.859007358551025],
+    'univ': [6.511926767416298e-05, 0.3615120530128479, 0.5126736760139471, 0.6769865036010739, 0.9064594149589539, 1.0960444378852827, 3.268293619155884],
+    'zara1': [0.0004946928238496184, 0.4125069320201874, 0.5463191390037537, 0.7041269063949582, 0.9306352257728567, 1.1250816619396198, 4.725627899169922],
+    'zara2': [0.00029691029340028763, 0.4149098455905917, 0.5619442939758301, 0.7374026805162428, 1.0406314778327934, 1.3124978363513937, 5.0315937995910645],
+}
+for key in percentile_intervals:
+    percentile_intervals[key][0] = 0; percentile_intervals[key][-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
+
+per_expert_percentile_int = False ### doesn't work with trainbigrouter!!! (doesn't make sense)
+# # # NBA DATASET, DIFFERENT TARGETS FOR EVERY EXPERT
+# import pickle
+# percentile_intervals = pickle.load(open('datasets/nba/nba_train_learned_targets0_01.pkl', 'rb')) # using baseline performance with learntarg0_01 targets
+# for key1 in percentile_intervals:
+#     for key2 in percentile_intervals[key1]:
+#         percentile_intervals[key1][key2][0] = 0; percentile_intervals[key1][key2][-1] = 1e4 # in case any are less or greater than the trainset on which npy was generated 
 
 ortho_weight = 0 # ortho simple or proj, only use with harmonic
 var_weight = 0 # only use with harmonic
@@ -570,7 +616,7 @@ class FMoEHarmonic(FMoE):
                 base_idx += batch_size
         
         return torch.cat(outputs, dim=0) if outputs else inp[:0]
-    def forward(self, moe_inp, kalman_score=None):
+    def forward(self, moe_inp, kalman_score=None, layername=None, transformertype=None):
         r"""
         The FMoE module first computes gate output, and then conduct MoE forward
         according to the gate.  The score of the selected gate given by the
@@ -651,16 +697,27 @@ class FMoEHarmonic(FMoE):
             else: # using AME-TS method
                 gate_probs = torch.full(
                     (moe_inp.shape[0], NUM_EXPERTS), 0,
-                    dtype=moe_inp.dtype,       # match float32/float16/bfloat16
+                    dtype=moe_inp.dtype,       # initialized as all zeros
                     device=moe_inp.device
                 )
                 # avg_expert_idx_list = []
-                for i in range(len(ratios)):
-                    kalman_start = percentile_intervals[self.data][i] if isinstance(percentile_intervals, dict) else percentile_intervals[i]
-                    kalman_end = percentile_intervals[self.data][i+1] if isinstance(percentile_intervals, dict) else percentile_intervals[i+1]
+                if per_expert_percentile_int:
+                    if self.layername is None or self.transformertype is None:
+                        import pdb; pdb.set_trace()
+                    for i in range(NUM_EXPERTS):
+                        kalman_start = percentile_intervals[layername][transformertype][i]
+                        kalman_end = percentile_intervals[layername][transformertype][i+1]
 
-                    inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
-                    gate_probs[inds, i*factor:(i+1)*factor] = torch.ones(factor, device=moe_inp.device) / factor # set target distribution for this group of experts to be uniform across the experts in the group
+                        inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
+                        gate_probs[inds, i] = 1.0 # one-hot for the expert where these examples belong
+
+                else:
+                    for i in range(len(ratios)):
+                        kalman_start = percentile_intervals[self.data][i] if isinstance(percentile_intervals, dict) else percentile_intervals[i]
+                        kalman_end = percentile_intervals[self.data][i+1] if isinstance(percentile_intervals, dict) else percentile_intervals[i+1]
+
+                        inds = (kalman_score > kalman_start) & (kalman_score <= kalman_end)
+                        gate_probs[inds, i*factor:(i+1)*factor] = torch.ones(factor, device=moe_inp.device) / factor # set target distribution for this group of experts to be uniform across the experts in the group, rest are 0
 
                 # train the gate to predict according to kalman (and hack avg_expert_idx to do it)
                 gate_top_k_idx, gate_score, gate_logits, gate_avg_expert_idx = self.gate(moe_inp, return_all_scores=True)
@@ -814,6 +871,8 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
         )
         self.mark_parallel_comm(expert_dp_comm)
         self.class_token_moe = class_token_moe
+        self.layername = None
+        self.transformertype = None
 
     def forward(self, inp: torch.Tensor, ret={}, kalman_score=None):
         original_shape = inp.shape
@@ -824,10 +883,10 @@ class FMoETransformerMLPHarmonic(FMoEHarmonic):
 
         if not self.class_token_moe: inp = inp.reshape(-1, self.d_model)
         if viz: 
-            output, avg_expert_idx, gate_score, top_k_idx = super().forward(inp)
+            output, avg_expert_idx, gate_score, top_k_idx = super().forward(inp, layername=self.layername, transformertype=self.transformertype)
             ret["gate_score"] = gate_score.reshape(original_shape[0], -1, TOPK)
             ret["top_k_idx"] = top_k_idx.reshape(original_shape[0], -1, TOPK)
-        else: output, avg_expert_idx = super().forward(inp, kalman_score=kalman_score)
+        else: output, avg_expert_idx = super().forward(inp, kalman_score=kalman_score, layername=self.layername, transformertype=self.transformertype)
         
         contr_loss = 0
         if contrast_compress_embedding and self.training:

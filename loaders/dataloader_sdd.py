@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 
 use_kalman = False
 which_score = 'performance' 
+if '6nn' not in which_score: which_score = which_score + '_redoint'
 
 class TrajectoryDataset(Dataset):
     def __init__(

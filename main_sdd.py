@@ -16,7 +16,7 @@ from loaders.dataloader_sdd import TrajectoryDataset, use_kalman
 import time
 import pickle
 
-measure_flops = False
+measure_flops = True
 def register_flop_hooks(model):
     def count_expert_flops(module, input, output):
         inp = input[0]
@@ -116,7 +116,7 @@ def main():
         loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=opts.batch_size, collate_fn=my_collate_kalman if use_kalman else my_collate, shuffle=True, num_workers=8, drop_last=True)
         
     dataset_test = TrajectoryDataset(mode='test', scale=opts.scale, inputs=opts.inputs)
-    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, collate_fn=my_collate if (args.test or not use_kalman) else my_collate_kalman, shuffle=False, num_workers=8)
+    loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opts.batch_size, collate_fn=my_collate if (not use_kalman) else my_collate_kalman, shuffle=False, num_workers=8)
 
     if 'reported' in args.tag:
         opts.inputs = ['vel_x', 'vel_y']
@@ -137,14 +137,44 @@ def main():
         scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=opts.milestones, gamma=opts.decay_gamma)
 
     model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0] + args.tag)
-    os.makedirs(model_save_dir, exist_ok=True)
 
-    if args.test:
+    results = {'epochs': [], 'losses': []}
+    best_val_loss = 1e8
+    best_ade = 1e8
+    best_epoch = 0
+    print('[INFO] The seed is :',seed)
+        
+    if os.path.isdir(model_save_dir):
         model_name = args.dataset + '_ckpt_best.pth'
         model_path = os.path.join(model_save_dir, model_name)
         print('[INFO] Loading model from:', model_path)
         model_ckpt = torch.load(model_path)
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
+        if not args.test:
+            epoch = model_ckpt['epoch']
+            test_loss, ade = test(epoch, model, loader_test)
+            results['epochs'].append(epoch)
+            results['losses'].append(test_loss)
+
+            state = {
+                'epoch': epoch,
+                'state_dict': model.state_dict(),
+                'optimizer': optimizer.state_dict()
+            }
+            
+            if test_loss < best_val_loss:
+                best_val_loss = test_loss
+                best_ade = ade
+                best_epoch = epoch
+                file_path = os.path.join(model_save_dir, str(args.dataset) + '_ckpt_best.pth')
+                torch.save(state, file_path)
+            print('[INFO] Best {} Loss: {:.5f} \t Best ade: {:.5f} \t Best epoch {}\n'.format('TEST', best_val_loss, best_ade, best_epoch))
+
+
+    else:
+        os.makedirs(model_save_dir, exist_ok=True)
+
+    if args.test:
         ade, fde = test(model_ckpt['epoch'], model, loader_test)
         os.makedirs('results', exist_ok=True)
         with open(os.path.join('./results', '{}_result.csv'.format(args.dataset)), 'w', newline='') as f:
@@ -152,12 +182,6 @@ def main():
             csv_writer.writerow([os.path.basename(args.config).split('.')[0], ade, fde])
         exit()
 
-    results = {'epochs': [], 'losses': []}
-    best_val_loss = 1e8
-    best_ade = 1e8
-    best_epoch = 0
-    print('[INFO] The seed is :',seed)
-    
     for epoch in range(0, opts.num_epochs):
         train(epoch, model, optimizer, loader_train)
 
@@ -291,7 +315,7 @@ def test(epoch, model, loader):
         batch_count = 0
         for _, data in enumerate(loader):
             batch_count += 1
-            if (use_kalman and not args.test):
+            if (use_kalman):
                 x_abs, y, kalman = data
                 x_abs, y, kalman = x_abs.cuda(), y.cuda(), kalman.cuda()  
             else:
@@ -316,7 +340,7 @@ def test(epoch, model, loader):
                     flops_per_batch = get_total_flops(model)
                     if args.test:
                         print_flops(model)
-                        import sys; sys.exit(0)
+                        # import sys; sys.exit(0)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)

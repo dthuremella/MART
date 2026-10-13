@@ -18,12 +18,12 @@ pred_rel: True
 scale: 1.86
 
 # training params
-num_epochs: 300
+num_epochs: 100
 lr: 0.001
 clip_grad: null
 batch_size: 64
 scheduler_type: MultiStepLR
-milestones: [100, 200]
+milestones: [1, 2, 3, 50, 75]
 decay_gamma: 0.5
 div_by: 1
-div_by_shared: 1
+div_by_shared: 4

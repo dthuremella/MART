@@ -77,13 +77,13 @@ pip install -r requirements.txt
 * Train MART on the ETH-UCY dataset
   ```
   chmod +x ./scripts/train_eth_all.sh
-  ./scripts/train_eth_all.sh ./configs/mart_eth.yaml $GPU_ID
+  ./scripts/train_eth_all.sh ./configs/mart_eth.yaml $GPU_ID $TAG
   ```
 
 * Test MART on the ETH-UCY dataset after training
   ```
   chmod +x ./scripts/test_eth_all.sh
-  ./scripts/test_eth_all.sh ./configs/mart_eth.yaml $GPU_ID
+  ./scripts/test_eth_all.sh ./configs/mart_eth.yaml $GPU_ID $TAG
   ```
 
 ### 🚁 SDD Dataset
