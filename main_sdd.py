@@ -153,6 +153,7 @@ def main():
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
         if not args.test:
             checkpoint_epoch = model_ckpt['epoch']
+            for _ in range(checkpoint_epoch): scheduler.step() # make sure scheduler is in right spot
             test_loss, ade = test(checkpoint_epoch, model, loader_test)
             results['epochs'].append(checkpoint_epoch)
             results['losses'].append(test_loss)
