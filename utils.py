@@ -1,4 +1,3 @@
-
 import random
 import tree
 
@@ -21,7 +20,7 @@ viz = False # only possible during inference
 #### MoE args ####
 moe_e = True
 moe_n = True
-NUM_EXPERTS = 32
+NUM_EXPERTS = 8
 TOPK = 1
 SHARED = 1
 
@@ -56,30 +55,90 @@ class_token_harmonic_div_is_always_1 = False
 # # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
 
 # #### -kldiv-
-# ratios = [1, 1, 1, 1, 1, 1] # equal ratios
-# targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
-# ratios = [1, 1, 1, 1, 1, 1] # equal ratios
-# targets = [0.80, 0.115, 0.043, 0.021, 0.011, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+kldiv = 'x8'
+compute = 'lt8x' # equal, lt2x, lt4x, lt8x, lt10x
 
-# # x16 split
-# ratios = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] # equal ratios
-# # ratios = [1.0/2, 1, 2, 3, 5, 7, 8, 10] # lt ratios
-# targets = [0.40, 0.167, 0.099, 0.068, 0.05, 0.038, 0.032, 0.026, 0.023, 0.019, 0.017, 0.015, 0.013, 0.012, 0.011, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+if kldiv == 'x6':
+    # original split
+    if compute == 'equal':
+        ratios = [1, 1, 1, 1, 1, 1]
+    elif compute == 'lt10x':
+        ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios old way
+    else:
+        ratios = None
+    # targets = [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # old self-determined targets (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+    targets = [0.80, 0.115, 0.043, 0.021, 0.011, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
 
-# # x8 split
-# ratios = [1, 1, 1, 1, 1, 1, 1, 1] # equal ratios
-# # ratios = [1.0/2, 1, 2, 3, 5, 7, 8, 10] # lt ratios
-# targets = [0.80, 0.094, 0.039, 0.022, 0.014, 0.011, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+elif kldiv == 'x16':
+    # x16 split
+    if compute == 'equal':
+        ratios = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] # equal ratios
+    else:
+        ratios = None
+    targets = [0.40, 0.167, 0.099, 0.068, 0.05, 0.038, 0.032, 0.026, 0.023, 0.019, 0.017, 0.015, 0.013, 0.012, 0.011, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
 
-# # x4 split
-# ratios = [1, 1, 1, 1] # equal ratios
-# # ratios = [1.0/2, 1, 5, 10] # lt ratios
-# targets = [0.80, 0.133, 0.057, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+elif kldiv == 'x8':
+    # x8 split
+    targets = [0.80, 0.094, 0.039, 0.022, 0.014, 0.011, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+    if compute == 'equal':
+        ratios = [1, 1, 1, 1, 1, 1, 1, 1] # equal ratios
+    else:
+        v = np.array(targets).copy()
+        v = -v + v[0]               # flip so weight is opposite of freq, and add min value so it's > 0
+        min_ratio = 0.5 # the most common (80%) of examples have a hidden size that's half the original architecture's
+        
+        if compute == 'lt10x':
+            ratios = [1.0/2, 1, 2, 3, 5, 7, 8, 10]  # lt ratios old way
 
-# x2 split
-ratios = [1,1] #equal ratios
-# ratios = [1.0/2, 3] # lt ratios
-targets = [0.80, 0.20]
+        # a is calculated such that np.dot(targets, ratios) == 1 (or as close as possible to 1)
+        elif compute == 'lt2x':
+            n = 2
+            a = 0.001                             
+        elif compute == 'lt4x':
+            n = 4
+            a = 6.11                              
+        elif compute == 'lt8x':
+            n = 8
+            a = 35.97                          
+        scale = (n - min_ratio) / v[-1]
+        ratios = list(scale * v**a + min_ratio)    
+
+elif kldiv == 'x4':
+    targets = [0.80, 0.133, 0.057, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+    # x4 split
+    if compute == 'equal':
+        ratios = [1, 1, 1, 1] # equal ratios
+    else:
+        v = np.array(targets).copy()
+        v = -v + v[0]               # flip so weight is opposite of freq, and add min value so it's > 0
+        min_ratio = 0.5 # the most common (80%) of examples have a hidden size that's half the original architecture's
+
+        if compute == 'lt10x':
+            ratios = [1.0/2, 1, 5, 10] # old lt ratios
+
+        # a is calculated such that np.dot(targets, ratios) == 1 (or as close as possible to 1)
+        elif compute == 'lt2x':
+            n = 2
+            a = 0.001                             
+        elif compute == 'lt4x':
+            n = 4
+            a = 2.68                              
+        elif compute == 'lt8x':
+            n = 8
+            a = 9.79                          
+        scale = (n - min_ratio) / v[-1]
+        ratios = list(scale * v**a + min_ratio)
+
+
+elif kldiv == 'x2':
+    # x2 split
+    if compute == 'equal':
+        ratios = [1,1] #equal ratios
+    elif compute == 'lt3x':
+        ratios = [1.0/2, 3] # lt ratios
+    else:
+        ratios = None
+    targets = [0.80, 0.20]
 
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
 harmonic_bias_loss = 1 # number (how much to weight it), or None

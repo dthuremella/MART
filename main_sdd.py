@@ -144,6 +144,7 @@ def main():
     best_epoch = 0
     print('[INFO] The seed is :',seed)
         
+    checkpoint_epoch = 0
     if os.path.isdir(model_save_dir):
         model_name = args.dataset + '_ckpt_best.pth'
         model_path = os.path.join(model_save_dir, model_name)
@@ -151,13 +152,13 @@ def main():
         model_ckpt = torch.load(model_path)
         model.load_state_dict(model_ckpt['state_dict'], strict=True)
         if not args.test:
-            epoch = model_ckpt['epoch']
-            test_loss, ade = test(epoch, model, loader_test)
-            results['epochs'].append(epoch)
+            checkpoint_epoch = model_ckpt['epoch']
+            test_loss, ade = test(checkpoint_epoch, model, loader_test)
+            results['epochs'].append(checkpoint_epoch)
             results['losses'].append(test_loss)
 
             state = {
-                'epoch': epoch,
+                'epoch': checkpoint_epoch,
                 'state_dict': model.state_dict(),
                 'optimizer': optimizer.state_dict()
             }
@@ -165,7 +166,7 @@ def main():
             if test_loss < best_val_loss:
                 best_val_loss = test_loss
                 best_ade = ade
-                best_epoch = epoch
+                best_epoch = checkpoint_epoch
                 file_path = os.path.join(model_save_dir, str(args.dataset) + '_ckpt_best.pth')
                 torch.save(state, file_path)
             print('[INFO] Best {} Loss: {:.5f} \t Best ade: {:.5f} \t Best epoch {}\n'.format('TEST', best_val_loss, best_ade, best_epoch))
@@ -182,7 +183,7 @@ def main():
             csv_writer.writerow([os.path.basename(args.config).split('.')[0], ade, fde])
         exit()
 
-    for epoch in range(0, opts.num_epochs):
+    for epoch in range(checkpoint_epoch, opts.num_epochs):
         train(epoch, model, optimizer, loader_train)
 
         # run train again to update the target parameter
