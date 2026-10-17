@@ -20,7 +20,7 @@ viz = False # only possible during inference
 #### MoE args ####
 moe_e = True
 moe_n = True
-NUM_EXPERTS = 8
+NUM_EXPERTS = 32
 TOPK = 1
 SHARED = 1
 
@@ -55,8 +55,9 @@ class_token_harmonic_div_is_always_1 = False
 # # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
 
 # #### -kldiv-
-kldiv = 'x8'
-compute = 'lt8x' # equal, lt2x, lt4x, lt8x, lt10x
+kldiv = 'x4'
+compute = 'lt4x' # equal, lt2x, lt4x, lt8x, lt10x
+lt_type = 'exp' # linear, exp, ''
 
 if kldiv == 'x6':
     # original split
@@ -91,17 +92,30 @@ elif kldiv == 'x8':
             ratios = [1.0/2, 1, 2, 3, 5, 7, 8, 10]  # lt ratios old way
 
         # a is calculated such that np.dot(targets, ratios) == 1 (or as close as possible to 1)
-        elif compute == 'lt2x':
-            n = 2
-            a = 0.001                             
-        elif compute == 'lt4x':
-            n = 4
-            a = 6.11                              
-        elif compute == 'lt8x':
-            n = 8
-            a = 35.97                          
-        scale = (n - min_ratio) / v[-1]
-        ratios = list(scale * v**a + min_ratio)    
+        else:
+            if compute == 'lt2x':
+                n = 2
+                a = 0.001                             
+            elif compute == 'lt4x':
+                n = 4
+                a = 6.11                              
+            elif compute == 'lt8x':
+                n = 8
+                a = 35.97             
+             
+            x_pts = [0, len(targets)-1]
+            y_pts = [0.5, n]
+            x_vals = np.arange(0, len(targets))
+            if lt_type == 'linear':
+                y_vals = np.interp(x_vals, x_pts, y_pts)
+            elif lt_type == 'exp':
+                # 2. Fit a line to the logarithm of y
+                m, b_ln = np.polyfit(x_pts, np.log(y_pts), deg=1)
+                y_vals = np.exp(b_ln) * np.exp(m * x_vals)
+            else:                                    
+                scale = (n - min_ratio) / v[-1]
+                y_vals = scale * v**a + min_ratio    
+            ratios = list(y_vals)
 
 elif kldiv == 'x4':
     targets = [0.80, 0.133, 0.057, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
@@ -117,18 +131,30 @@ elif kldiv == 'x4':
             ratios = [1.0/2, 1, 5, 10] # old lt ratios
 
         # a is calculated such that np.dot(targets, ratios) == 1 (or as close as possible to 1)
-        elif compute == 'lt2x':
-            n = 2
-            a = 0.001                             
-        elif compute == 'lt4x':
-            n = 4
-            a = 2.68                              
-        elif compute == 'lt8x':
-            n = 8
-            a = 9.79                          
-        scale = (n - min_ratio) / v[-1]
-        ratios = list(scale * v**a + min_ratio)
+        else:
+            if compute == 'lt2x':
+                n = 2
+                a = 0.001                             
+            elif compute == 'lt4x':
+                n = 4
+                a = 2.68                              
+            elif compute == 'lt8x':
+                n = 8
+                a = 9.79  
 
+            x_pts = [0, len(targets)-1]
+            y_pts = [0.5, n]
+            x_vals = np.arange(0, len(targets))
+            if lt_type == 'linear':
+                y_vals = np.interp(x_vals, x_pts, y_pts)
+            elif lt_type == 'exp':
+                # 2. Fit a line to the logarithm of y
+                m, b_ln = np.polyfit(x_pts, np.log(y_pts), deg=1)
+                y_vals = np.exp(b_ln) * np.exp(m * x_vals)
+            else:                                    
+                scale = (n - min_ratio) / v[-1]
+                y_vals = scale * v**a + min_ratio    
+            ratios = list(y_vals)
 
 elif kldiv == 'x2':
     # x2 split

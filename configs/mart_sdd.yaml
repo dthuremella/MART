@@ -23,7 +23,7 @@ lr: 0.001
 clip_grad: null
 batch_size: 64
 scheduler_type: MultiStepLR
-milestones: [100,200,300]
+milestones: [100, 200]
 decay_gamma: 0.5
 div_by: 1
 div_by_shared: 4

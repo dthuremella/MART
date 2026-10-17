@@ -288,7 +288,43 @@ def main():
         scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=opts.milestones, gamma=opts.decay_gamma)
 
     model_save_dir = os.path.join('./checkpoints', os.path.basename(args.config).split('.')[0] + args.tag) 
-    os.makedirs(model_save_dir, exist_ok=True)
+    results = {'epochs': [], 'losses': []}
+    best_val_loss = 1e8
+    best_ade = 1e8
+    best_epoch = 0
+    print('[INFO] The seed is :',seed)
+        
+    checkpoint_epoch = 0
+    if os.path.isdir(model_save_dir):
+        model_name = args.dataset + '_ckpt_best.pth'
+        model_path = os.path.join(model_save_dir, model_name)
+        if os.path.isfile(model_path):
+            print('[INFO] Loading model from:', model_path)
+            model_ckpt = torch.load(model_path)
+            model.load_state_dict(model_ckpt['state_dict'], strict=True)
+            if not args.test:
+                checkpoint_epoch = model_ckpt['epoch']
+                for _ in range(checkpoint_epoch): scheduler.step() # make sure scheduler is in right spot
+                test_loss, ade = test(checkpoint_epoch, model, loader_test)
+                results['epochs'].append(checkpoint_epoch)
+                results['losses'].append(test_loss)
+
+                state = {
+                    'epoch': checkpoint_epoch,
+                    'state_dict': model.state_dict(),
+                    'optimizer': optimizer.state_dict()
+                }
+                
+                if test_loss < best_val_loss:
+                    best_val_loss = test_loss
+                    best_ade = ade
+                    best_epoch = checkpoint_epoch
+                    file_path = os.path.join(model_save_dir, str(args.dataset) + '_ckpt_best.pth')
+                    torch.save(state, file_path)
+                print('[INFO] Best {} Loss: {:.5f} \t Best ade: {:.5f} \t Best epoch {}\n'.format('TEST', best_val_loss, best_ade, best_epoch))
+
+    else:
+        os.makedirs(model_save_dir, exist_ok=True)
 
     if args.test:
         model_name = args.dataset + '_ckpt_best.pth'
@@ -310,7 +346,7 @@ def main():
     best_epoch = 0
     print('[INFO] The seed is :',seed)
     
-    for epoch in range(0, opts.num_epochs):
+    for epoch in range(checkpoint_epoch, opts.num_epochs):
         train(epoch, model, optimizer, loader_train)
 
         # run train again to update the target parameter
