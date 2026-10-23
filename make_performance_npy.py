@@ -24,8 +24,11 @@ from loaders.dataloader_eth import TrajectoryDataset as ETHTrajectoryDataset
 from main_sdd import my_collate
 from fmoe.megatron import fmoefy
 
+
+longtail = [1, 2, 5, 'rest'] # None to turn off 
+
 # intervals=[0,1,2,5,10,20,100]
-intervals = [0, 80, 90, 95, 98, 99, 100]
+intervals = None #[0, 80, 90, 95, 98, 99, 100]
 
 learned_targets = None
 # learned_targets = pickle.load(open('datasets/nba/nba_test_learned_targets0_01intervals.pkl', 'rb'))
@@ -140,53 +143,82 @@ def test_nba(epoch, model, loader):
             avg_meter['counter'] += (num_agents * batch_size)
 
     xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
-    fdes = torch.min(torch.linalg.norm((ys.unsqueeze(2).expand(ypreds.shape) - ypreds), dim=-1), dim=2)[0][:,:,-1].cpu()
+    fdes = torch.min(torch.linalg.norm((ys.unsqueeze(2).expand(ypreds.shape) - ypreds), dim=-1)[:,:,:,-1], dim=2)[0].cpu()
     arr = np.array(fdes)
+    data_to = f'./datasets/{args.dataset}/{args.dataset}_{loader.dataset.mode}_{args.epithet}performance_redobaseline.npy'
 
-    data_to = f'./datasets/{args.dataset}/{args.dataset}_{loader.dataset.mode}_{args.epithet}performance_redoint.npy'
+    if longtail is not None:
+        baseline_fdes = np.load(data_to)
+        ades = torch.min(torch.linalg.norm((ys.unsqueeze(2).expand(ypreds.shape) - ypreds), dim=-1).mean(dim=-1), dim=2)[0].cpu()
+        n_test = len(baseline_fdes)
+        inds = np.argsort(baseline_fdes) # low err to high err
 
-    if learned_targets:
-        percentiles = {}
-        for layername in learned_targets.keys():
-            percentiles[layername] = {}
-            for transformertype in learned_targets[layername].keys():
-                cumsum = np.array(learned_targets[layername][transformertype].detach().cpu()).cumsum()
-                cumsum[-1] = 100
-                learned_intervals = np.insert(cumsum, 0, 0)
-                try:
-                    percentiles[layername][transformertype] = np.percentile(arr, learned_intervals)
-                except:
-                    import pdb; pdb.set_trace()
-        filename = data_to[:-23] + '.pkl'
-        pickle.dump(percentiles, open(filename, 'wb'))
+        s = ''
+        for topk in longtail:
+            for metric in ['ade', 'fde']:
+                s = s + f'{topk}_{metric}  '
+        print(s)
 
-    else:
-        np.save(data_to, arr)
-        print(f'[{args.dataset}] Nth percentile: {intervals}')
-        performance_interval = np.percentile(arr, intervals)
-        print([performance_interval for performance_interval in performance_interval])
+        s = ''
+        for topk in longtail:
+            for metric in [ades, fdes]:
+                lt_sorted = metric[inds]
+                if topk == 'rest':
+                    cutoff = int(longtail[-2] / 100.0 * n_test)
+                    topk_errs = lt_sorted[:-cutoff]
+                else:
+                    cutoff = int(topk / 100.0 * n_test)
+                    topk_errs = lt_sorted[-cutoff:]
+                s = s + f'{topk_errs.mean():.3f}  ' 
+        print(s)
+        print('mean minADE: ', ades.mean())
+        print('mean minFDE: ', fdes.mean())
 
-        if learnable_targets:
-            filename = data_to[:-23] + 'intervals.pkl'
 
-            target_logits_final = {}
-            encoders = (model.pair_encoders + model.hyper_encoders)
-            encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
-            layer_numbers = list(range(len(model.pair_encoders))) * 2
-            encoder_strings = [f'{type_i}{layer_i}' for type_i, layer_i in zip(encoder_types, layer_numbers)]
-            for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
-                target_logits_final[encoder_str] = {}
-                for layer in encoder.layers:
-                    if hasattr(layer, 'linear_net_n'):
-                        target_logits_final[encoder_str]['linear_net_n'] = F.softmax(layer.linear_net_n.gate.target_logits)*100
-                    if hasattr(layer, 'linear_net2_e'):
-                        target_logits_final[encoder_str]['linear_net2_e'] = F.softmax(layer.linear_net2_e.gate.target_logits)*100
-            pickle.dump(target_logits_final, open(filename, 'wb'))
 
-            # for key0 in target_logits_final:
-            #     print(key0)
-            #     for key1 in target_logits_final[key0]:
-            #         print(f'{key1}: {target_logits_final[key0][key1]}')
+    elif intervals is not None:
+        if learned_targets:
+            percentiles = {}
+            for layername in learned_targets.keys():
+                percentiles[layername] = {}
+                for transformertype in learned_targets[layername].keys():
+                    cumsum = np.array(learned_targets[layername][transformertype].detach().cpu()).cumsum()
+                    cumsum[-1] = 100
+                    learned_intervals = np.insert(cumsum, 0, 0)
+                    try:
+                        percentiles[layername][transformertype] = np.percentile(arr, learned_intervals)
+                    except:
+                        import pdb; pdb.set_trace()
+            filename = data_to[:-23] + '.pkl'
+            pickle.dump(percentiles, open(filename, 'wb'))
+
+        else:
+            np.save(data_to, arr)
+            print(f'[{args.dataset}] Nth percentile: {intervals}')
+            performance_interval = np.percentile(arr, intervals)
+            print([performance_interval for performance_interval in performance_interval])
+
+            if learnable_targets:
+                filename = data_to[:-23] + 'intervals.pkl'
+
+                target_logits_final = {}
+                encoders = (model.pair_encoders + model.hyper_encoders)
+                encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
+                layer_numbers = list(range(len(model.pair_encoders))) * 2
+                encoder_strings = [f'{type_i}{layer_i}' for type_i, layer_i in zip(encoder_types, layer_numbers)]
+                for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
+                    target_logits_final[encoder_str] = {}
+                    for layer in encoder.layers:
+                        if hasattr(layer, 'linear_net_n'):
+                            target_logits_final[encoder_str]['linear_net_n'] = F.softmax(layer.linear_net_n.gate.target_logits)*100
+                        if hasattr(layer, 'linear_net2_e'):
+                            target_logits_final[encoder_str]['linear_net2_e'] = F.softmax(layer.linear_net2_e.gate.target_logits)*100
+                pickle.dump(target_logits_final, open(filename, 'wb'))
+
+                # for key0 in target_logits_final:
+                #     print(key0)
+                #     for key1 in target_logits_final[key0]:
+                #         print(f'{key1}: {target_logits_final[key0][key1]}')
 
     th = get_th(opts, model)
     print('\n[{}] Epoch {} th: {}'.format(loader.dataset.mode.upper(), epoch, th))
@@ -276,38 +308,73 @@ def test_sdd(epoch, model, loader, mode):
     
     ###### Calculate performance intervals and save ###########
     xs, ys, ypreds, batch_idxs = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu(),  torch.cat(batch_idxs).cpu()
-    fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1), dim=1)[0][:,-1].cpu()
+    fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1)[:,:,-1], dim=1)[0].cpu()
     fdes /= opts.scale
-    scores = np.array(fdes)
-    print(f'[{args.dataset}] Nth percentile: {intervals}')
-    performance_interval = np.percentile(scores, intervals)
-    print([performance_interval for performance_interval in performance_interval])
+    fdes = np.array(fdes)
+    fdes = [fdes[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
+    fdes = np.array(fdes)
 
-    data_to = f'./datasets/stanford/{args.dataset}_{mode}_{args.epithet}performance_redoint.npy'
-    scores_list = [scores[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
+    data_to = f'./datasets/stanford/{args.dataset}_{mode}_{args.epithet}performance_redobaseline.npy'
 
-    np.save(data_to, np.array(scores_list, dtype=object), allow_pickle=True)
-    
-    if learnable_targets:
-        target_logits_final = {}
-        encoders = (model.pair_encoders + model.hyper_encoders)
-        encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
-        layer_numbers = list(range(len(model.pair_encoders))) * 2
-        encoder_strings = [f'{type_i}{layer_i}' for type_i, layer_i in zip(encoder_types, layer_numbers)]
-        for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
-            target_logits_final[encoder_str] = {}
-            for layer in encoder.layers:
-                if hasattr(layer, 'linear_net_n'):
-                    target_logits_final[encoder_str]['linear_net_n'] = torch.round(F.softmax(layer.linear_net_n.gate.target_logits)*100).int().tolist()
-                if hasattr(layer, 'linear_net2_e'):
-                    target_logits_final[encoder_str]['linear_net2_e'] = torch.round(F.softmax(layer.linear_net2_e.gate.target_logits)*100).int().tolist()
-        for key0 in target_logits_final:
-            print(key0)
-            for key1 in target_logits_final[key0]:
-                print(f'{key1}: {target_logits_final[key0][key1]}')
+    if longtail is not None:
+        baseline_fdes = np.load(data_to, allow_pickle=True)
+        ades = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1).mean(dim=-1), dim=1)[0].cpu()
+        ades /= opts.scale
+        n_test = len(baseline_fdes)
+        import pdb; pdb.set_trace()
+        inds = np.argsort(baseline_fdes) # low err to high err
 
-    avg_meter['ade'] /= opts.scale
-    avg_meter['fde'] /= opts.scale
+        s = ''
+        for topk in longtail:
+            for metric in ['ade', 'fde']:
+                s = s + f'{topk}_{metric}  '
+        print(s)
+
+        s = ''
+        for topk in longtail:
+            for metric in [ades, fdes]:
+                lt_sorted = metric[inds]
+                if topk == 'rest':
+                    cutoff = int(longtail[-2] / 100.0 * n_test)
+                    topk_errs = lt_sorted[:-cutoff]
+                else:
+                    cutoff = int(topk / 100.0 * n_test)
+                    topk_errs = lt_sorted[-cutoff:]
+                s = s + f'{topk_errs.mean():.3f}  ' 
+        print(s)
+        print('mean minADE: ', ades.mean())
+        print('mean minFDE: ', fdes.mean())
+
+
+
+    elif intervals is not None:
+
+        print(f'[{args.dataset}] Nth percentile: {intervals}')
+        performance_interval = np.percentile(scores, intervals)
+        print([performance_interval for performance_interval in performance_interval])
+
+        np.save(data_to, np.array(fdes, dtype=object), allow_pickle=True)
+        
+        if learnable_targets:
+            target_logits_final = {}
+            encoders = (model.pair_encoders + model.hyper_encoders)
+            encoder_types = (['pair'] * len(model.pair_encoders) + ['group'] * len(model.hyper_encoders))
+            layer_numbers = list(range(len(model.pair_encoders))) * 2
+            encoder_strings = [f'{type_i}{layer_i}' for type_i, layer_i in zip(encoder_types, layer_numbers)]
+            for encoder, encoder_str in zip(encoders, encoder_strings):  # however you access your gates
+                target_logits_final[encoder_str] = {}
+                for layer in encoder.layers:
+                    if hasattr(layer, 'linear_net_n'):
+                        target_logits_final[encoder_str]['linear_net_n'] = torch.round(F.softmax(layer.linear_net_n.gate.target_logits)*100).int().tolist()
+                    if hasattr(layer, 'linear_net2_e'):
+                        target_logits_final[encoder_str]['linear_net2_e'] = torch.round(F.softmax(layer.linear_net2_e.gate.target_logits)*100).int().tolist()
+            for key0 in target_logits_final:
+                print(key0)
+                for key1 in target_logits_final[key0]:
+                    print(f'{key1}: {target_logits_final[key0][key1]}')
+
+        avg_meter['ade'] /= opts.scale
+        avg_meter['fde'] /= opts.scale
     
     th = get_th(opts, model)
     print('\n[{}][{}] Epoch {} th: {}'.format(args.dataset.upper(), mode, epoch, th))
@@ -396,13 +463,13 @@ def test_eth(epoch, model, loader, mode):
 
     ###### Calculate performance intervals and save ###########
     xs, ys, ypreds, batch_idxs = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu(),  torch.cat(batch_idxs).cpu()
-    fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1), dim=1)[0][:,-1].cpu()
+    fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1)[:,:,-1], dim=1)[0].cpu()
     scores = np.array(fdes)
     print(f'[{args.dataset}] Nth percentile: {intervals}')
     performance_interval = np.percentile(scores, intervals)
     print([performance_interval for performance_interval in performance_interval])
 
-    data_to = f'./datasets/ethucy/{args.dataset}_{mode}_{args.epithet}performance_redoint.npy'
+    data_to = f'./datasets/ethucy/{args.dataset}_{mode}_{args.epithet}performance_redobaseline.npy'
     scores_list = [scores[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
 
     np.save(data_to, np.array(scores_list, dtype=object), allow_pickle=True)
@@ -448,7 +515,7 @@ if __name__ == "__main__":
     opts = load_config(args.config)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    for mode in ['test', 'train']:
+    for mode in ['test']: #, 'train']:
         print(f'\n=== Evaluating {mode} set ===')
         if 'nba' in args.config:
             args.dataset = 'nba'

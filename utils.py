@@ -20,7 +20,7 @@ viz = False # only possible during inference
 #### MoE args ####
 moe_e = True
 moe_n = True
-NUM_EXPERTS = 32
+NUM_EXPERTS = 8
 TOPK = 1
 SHARED = 1
 
@@ -31,38 +31,40 @@ class_token = False # only done for second two layers, need to use even_harmonic
 class_token_all_layers = False
 class_token_harmonic_div_is_always_1 = False
 
-# #### Harmonic args #####
-# even_harmonic = False  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
-# harmonic_bias_loss = 0 # 1 # number (how much to weight it), or None
-# graded_bias_ratio = 1  ### set to 1 to remove
+#### Harmonic args #####
+even_harmonic = False  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
+harmonic_bias_loss = 0 # 1 # number (how much to weight it), or None
+graded_bias_ratio = 1  ### set to 1 to remove
 
-# # How much compute should each expert get?
-# # ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
-# ratios = None # [1, 1, 1, 1, 1, 1] # equal ratios
-# # ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
-# # force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
-# # long-tail (lt) ratios means:
-# # .01*10+.01*5+.03*3+.05*2+.10*1+.8*1/2+1/4
-# # one shared expert, 1/4 the size
-# # 4 experts with 1/2 the size for worst 80%
-# # 4 experts with 1x the size for next 10%
-# # 4 experts with 2x the size for next 5%
-# # 4 experts with 3x the size for next 3%
-# # 4 experts with 5x the size for next 1%
-# # 4 experts with 10x the size for best 1%
+# How much compute should each expert get?
+# ratios = [1.0/14, 1.0/12, 1.0/10, 1.0/8, 1.0/6, 1.0/4, 1.0/2]
+ratios = None # [1, 1, 1, 1, 1, 1] # equal ratios
+# ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios
+# force kalman based different_sizes experts   ##### NOT COMPATIBLE with class_token
+# long-tail (lt) ratios means:
+# .01*10+.01*5+.03*3+.05*2+.10*1+.8*1/2+1/4
+# one shared expert, 1/4 the size
+# 4 experts with 1/2 the size for worst 80%
+# 4 experts with 1x the size for next 10%
+# 4 experts with 2x the size for next 5%
+# 4 experts with 3x the size for next 3%
+# 4 experts with 5x the size for next 1%
+# 4 experts with 10x the size for best 1%
 
-# targets = None # [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
-# # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
+targets = None # [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
+# targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
 
 # #### -kldiv-
 kldiv = 'x4'
-compute = 'lt4x' # equal, lt2x, lt4x, lt8x, lt10x
-lt_type = 'exp' # linear, exp, ''
+compute = 'lt32x' # equal, onetwo lt2x, lt4x, lt8x, lt10x
+lt_type = 'onelinear' # onelinear linear, exp, ''
 
 if kldiv == 'x6':
     # original split
     if compute == 'equal':
         ratios = [1, 1, 1, 1, 1, 1]
+    elif compute == 'onetwo':
+        ratios = [1,2,3,4,5,6]
     elif compute == 'lt10x':
         ratios = [1.0/2, 1, 2, 3, 5, 10] # lt ratios old way
     else:
@@ -74,6 +76,8 @@ elif kldiv == 'x16':
     # x16 split
     if compute == 'equal':
         ratios = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] # equal ratios
+    elif compute == 'onetwo':
+        ratios = [1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8]
     else:
         ratios = None
     targets = [0.40, 0.167, 0.099, 0.068, 0.05, 0.038, 0.032, 0.026, 0.023, 0.019, 0.017, 0.015, 0.013, 0.012, 0.011, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
@@ -83,6 +87,9 @@ elif kldiv == 'x8':
     targets = [0.80, 0.094, 0.039, 0.022, 0.014, 0.011, 0.01, 0.01] # (kldiv) should sum to 1, set this to NONE if not using KL divergence loss
     if compute == 'equal':
         ratios = [1, 1, 1, 1, 1, 1, 1, 1] # equal ratios
+    elif compute == 'onetwo':
+        ratios = [1,2,3,4,5,6,7,8]
+
     else:
         v = np.array(targets).copy()
         v = -v + v[0]               # flip so weight is opposite of freq, and add min value so it's > 0
@@ -102,11 +109,18 @@ elif kldiv == 'x8':
             elif compute == 'lt8x':
                 n = 8
                 a = 35.97             
-             
+            elif compute == 'lt16x':
+                n = 16
+            elif compute == 'lt32x':
+                n = 32
+
             x_pts = [0, len(targets)-1]
             y_pts = [0.5, n]
             x_vals = np.arange(0, len(targets))
             if lt_type == 'linear':
+                y_vals = np.interp(x_vals, x_pts, y_pts)
+            elif lt_type == 'onelinear':
+                y_pts = [1, n]
                 y_vals = np.interp(x_vals, x_pts, y_pts)
             elif lt_type == 'exp':
                 # 2. Fit a line to the logarithm of y
@@ -122,6 +136,8 @@ elif kldiv == 'x4':
     # x4 split
     if compute == 'equal':
         ratios = [1, 1, 1, 1] # equal ratios
+    elif compute == 'onetwo':
+        ratios = [1,2,3,4]
     else:
         v = np.array(targets).copy()
         v = -v + v[0]               # flip so weight is opposite of freq, and add min value so it's > 0
@@ -141,11 +157,18 @@ elif kldiv == 'x4':
             elif compute == 'lt8x':
                 n = 8
                 a = 9.79  
+            elif compute == 'lt16x':
+                n = 16
+            elif compute == 'lt32x':
+                n = 32
 
             x_pts = [0, len(targets)-1]
             y_pts = [0.5, n]
             x_vals = np.arange(0, len(targets))
             if lt_type == 'linear':
+                y_vals = np.interp(x_vals, x_pts, y_pts)
+            elif lt_type == 'onelinear':
+                y_pts = [1, n]
                 y_vals = np.interp(x_vals, x_pts, y_pts)
             elif lt_type == 'exp':
                 # 2. Fit a line to the logarithm of y
@@ -160,6 +183,8 @@ elif kldiv == 'x2':
     # x2 split
     if compute == 'equal':
         ratios = [1,1] #equal ratios
+    elif compute == 'onetwo':
+        ratios = [1,2]
     elif compute == 'lt3x':
         ratios = [1.0/2, 3] # lt ratios
     else:

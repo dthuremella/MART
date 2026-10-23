@@ -156,12 +156,12 @@ def main():
         model_name = args.dataset + '_ckpt_best.pth'
         model_path = os.path.join(model_save_dir, model_name)
         if os.path.isfile(model_path):
+            ### load best
             print('[INFO] Loading model from:', model_path)
             model_ckpt = torch.load(model_path)
             model.load_state_dict(model_ckpt['state_dict'], strict=True)
             if not args.test:
                 checkpoint_epoch = model_ckpt['epoch']
-                for _ in range(checkpoint_epoch): scheduler.step() # make sure scheduler is in right spot
                 test_loss, ade = test(checkpoint_epoch, model, loader_test)
                 results['epochs'].append(checkpoint_epoch)
                 results['losses'].append(test_loss)
@@ -179,6 +179,34 @@ def main():
                     file_path = os.path.join(model_save_dir, str(args.dataset) + '_ckpt_best.pth')
                     torch.save(state, file_path)
                 print('[INFO] Best {} Loss: {:.5f} \t Best ade: {:.5f} \t Best epoch {}\n'.format('TEST', best_val_loss, best_ade, best_epoch))
+            
+            ### load latest checkpoint
+            if args.checkpoint:
+                print('[INFO] Loading model from:', args.checkpoint)
+                model_ckpt = torch.load(args.checkpoint)
+                model.load_state_dict(model_ckpt['state_dict'], strict=True)
+                if not args.test:
+                    checkpoint_epoch = model_ckpt['epoch']
+                    test_loss, ade = test(checkpoint_epoch, model, loader_test)
+                    results['epochs'].append(checkpoint_epoch)
+                    results['losses'].append(test_loss)
+
+                    state = {
+                        'epoch': checkpoint_epoch,
+                        'state_dict': model.state_dict(),
+                        'optimizer': optimizer.state_dict()
+                    }
+                    
+                    if test_loss < best_val_loss:
+                        best_val_loss = test_loss
+                        best_ade = ade
+                        best_epoch = checkpoint_epoch
+                        file_path = os.path.join(model_save_dir, str(args.dataset) + '_ckpt_best.pth')
+                        torch.save(state, file_path)
+                    print('[INFO] Best {} Loss: {:.5f} \t Best ade: {:.5f} \t Best epoch {}\n'.format('TEST', best_val_loss, best_ade, best_epoch))
+            
+            for _ in range(checkpoint_epoch): scheduler.step() # make sure scheduler is in right spot
+            
 
     else:
         os.makedirs(model_save_dir, exist_ok=True)
@@ -422,6 +450,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument("--test", action='store_true')
     parser.add_argument('--tag', type=str, default="", help='log tag add-on to folder name')
+    parser.add_argument('--checkpoint', type=str, default="", help='log tag add-on to folder name')
 
     args = parser.parse_args()
 

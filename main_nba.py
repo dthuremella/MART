@@ -1,4 +1,9 @@
 import os
+import sys
+for i, a in enumerate(sys.argv):
+    if a == '--gpu' and i + 1 < len(sys.argv):
+        os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[i + 1]
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 import random
 import argparse
 
