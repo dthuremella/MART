@@ -23,6 +23,7 @@ from loaders.dataloader_sdd import TrajectoryDataset as SDDTrajectoryDataset
 from loaders.dataloader_eth import TrajectoryDataset as ETHTrajectoryDataset
 from main_sdd import my_collate
 from fmoe.megatron import fmoefy
+from main_eth import register_flop_hooks, print_flops, get_total_flops, reset_flop_counts
 
 
 longtail = [1, 2, 5, 'rest'] # None to turn off 
@@ -56,6 +57,8 @@ learned_targets = None
 # {'linear_net_n': [5, 6, 5, 7, 4, 4, 5, 7, 3, 3, 4, 4, 3, 4, 3, 4, 3, 4, 3, 3, 5, 4, 3, 3],
 # 'linear_net2_e': [13, 8, 11, 14, 6, 4, 3, 4, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2]},
 # }
+
+measure_flops = True
 
 
 def main_nba(mode='train'):
@@ -148,9 +151,13 @@ def test_nba(epoch, model, loader):
     data_to = f'./datasets/{args.dataset}/{args.dataset}_{loader.dataset.mode}_{args.epithet}performance_redobaseline.npy'
 
     if longtail is not None:
-        baseline_fdes = np.load(data_to)
+        # flatten (B, N) -> (B*N,) so sorting/indexing is per agent, not per scene
+        baseline_fdes = np.load(data_to).reshape(-1)
         ades = torch.min(torch.linalg.norm((ys.unsqueeze(2).expand(ypreds.shape) - ypreds), dim=-1).mean(dim=-1), dim=2)[0].cpu()
+        ades = np.array(ades).reshape(-1)
+        fdes = arr.reshape(-1)
         n_test = len(baseline_fdes)
+        assert n_test == len(fdes), f'baseline has {n_test} agents but model has {len(fdes)}'
         inds = np.argsort(baseline_fdes) # low err to high err
 
         s = ''
@@ -310,18 +317,19 @@ def test_sdd(epoch, model, loader, mode):
     xs, ys, ypreds, batch_idxs = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu(),  torch.cat(batch_idxs).cpu()
     fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1)[:,:,-1], dim=1)[0].cpu()
     fdes /= opts.scale
-    fdes = np.array(fdes)
-    fdes = [fdes[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
-    fdes = np.array(fdes)
+    fdes_flat = np.array(fdes) # only valid agents, ordered by scene
 
     data_to = f'./datasets/stanford/{args.dataset}_{mode}_{args.epithet}performance_redobaseline.npy'
 
     if longtail is not None:
-        baseline_fdes = np.load(data_to, allow_pickle=True)
+        # baseline is saved per scene (valid agents only); flatten to match fdes_flat ordering
+        baseline_fdes = np.concatenate(np.load(data_to, allow_pickle=True)).astype(np.float64)
         ades = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1).mean(dim=-1), dim=1)[0].cpu()
         ades /= opts.scale
+        ades = np.array(ades)
+        fdes = fdes_flat
         n_test = len(baseline_fdes)
-        import pdb; pdb.set_trace()
+        assert n_test == len(fdes), f'baseline has {n_test} valid agents but model has {len(fdes)}'
         inds = np.argsort(baseline_fdes) # low err to high err
 
         s = ''
@@ -350,10 +358,11 @@ def test_sdd(epoch, model, loader, mode):
     elif intervals is not None:
 
         print(f'[{args.dataset}] Nth percentile: {intervals}')
-        performance_interval = np.percentile(scores, intervals)
+        performance_interval = np.percentile(fdes_flat, intervals)
         print([performance_interval for performance_interval in performance_interval])
 
-        np.save(data_to, np.array(fdes, dtype=object), allow_pickle=True)
+        scores_list = [fdes_flat[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
+        np.save(data_to, np.array(scores_list, dtype=object), allow_pickle=True)
         
         if learnable_targets:
             target_logits_final = {}
@@ -373,8 +382,8 @@ def test_sdd(epoch, model, loader, mode):
                 for key1 in target_logits_final[key0]:
                     print(f'{key1}: {target_logits_final[key0][key1]}')
 
-        avg_meter['ade'] /= opts.scale
-        avg_meter['fde'] /= opts.scale
+    avg_meter['ade'] /= opts.scale
+    avg_meter['fde'] /= opts.scale
     
     th = get_th(opts, model)
     print('\n[{}][{}] Epoch {} th: {}'.format(args.dataset.upper(), mode, epoch, th))
@@ -397,6 +406,9 @@ def main_eth(mode='train'):
 
     model = MART(opts).cuda()
     print('[INFO] Model params: {}'.format(sum(p.numel() for p in model.parameters())))
+
+    if measure_flops:
+        register_flop_hooks(model)
      
     optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=1e-12)
 
@@ -413,7 +425,7 @@ def main_eth(mode='train'):
     print('[INFO] Loading model from:', model_path)
     model_ckpt = torch.load(model_path)
     model.load_state_dict(model_ckpt['state_dict'], strict=True)
-    ade, fde = test_eth(model_ckpt['epoch'], model, loader_test, mode)
+    return test_eth(model_ckpt['epoch'], model, loader_test, mode)
 
 def test_eth(epoch, model, loader, mode):
     model.eval()
@@ -433,8 +445,14 @@ def test_eth(epoch, model, loader, mode):
             x_rel[:, :, 1:] = x_abs[:, :, 1:] - x_abs[:, :, :-1]
             x_rel[:, :, 0] = x_rel[:, :, 1]
 
+            if batch_count == 2:
+                reset_flop_counts(model)
+
             dims = 2 if 'reported' in args.tag else 3
             y_pred, _, score = model(x_abs[...,:dims], x_rel[...,:dims])
+
+            if batch_count == 2:
+                flops_per_batch = get_total_flops(model)
 
             if opts.pred_rel:
                 cur_pos = x_abs[:, :, [-1], :2].unsqueeze(2)
@@ -464,15 +482,54 @@ def test_eth(epoch, model, loader, mode):
     ###### Calculate performance intervals and save ###########
     xs, ys, ypreds, batch_idxs = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu(),  torch.cat(batch_idxs).cpu()
     fdes = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1)[:,:,-1], dim=1)[0].cpu()
-    scores = np.array(fdes)
-    print(f'[{args.dataset}] Nth percentile: {intervals}')
-    performance_interval = np.percentile(scores, intervals)
-    print([performance_interval for performance_interval in performance_interval])
+    fdes_flat = np.array(fdes) # only valid agents, ordered by scene
 
     data_to = f'./datasets/ethucy/{args.dataset}_{mode}_{args.epithet}performance_redobaseline.npy'
-    scores_list = [scores[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
 
-    np.save(data_to, np.array(scores_list, dtype=object), allow_pickle=True)
+    if longtail is not None:
+        # baseline is saved per scene (valid agents only); flatten to match fdes_flat ordering
+        baseline_fdes = np.concatenate(np.load(data_to, allow_pickle=True)).astype(np.float64)
+        ades = torch.min(torch.linalg.norm((ys.unsqueeze(1).expand(ypreds.shape) - ypreds), dim=-1).mean(dim=-1), dim=1)[0].cpu()
+        ades = np.array(ades)
+        fdes = fdes_flat
+        n_test = len(baseline_fdes)
+        assert n_test == len(fdes), f'baseline has {n_test} valid agents but model has {len(fdes)}'
+        inds = np.argsort(baseline_fdes) # low err to high err
+
+        s = ''
+        for topk in longtail:
+            for metric in ['ade', 'fde']:
+                s = s + f'{topk}_{metric}  '
+        print(s)
+
+        s = ''
+        errs = []
+        for topk in longtail:
+            for metric in [ades, fdes]:
+                lt_sorted = metric[inds]
+                if topk == 'rest':
+                    cutoff = int(longtail[-2] / 100.0 * n_test)
+                    topk_errs = lt_sorted[:-cutoff]
+                else:
+                    cutoff = int(topk / 100.0 * n_test)
+                    topk_errs = lt_sorted[-cutoff:]
+                s = s + f'{topk_errs.mean():.3f}  '
+                errs.append(topk_errs.mean())
+        print(s)
+        print(f'{args.dataset} mean minADE: {ades.mean()}  mean minFDE: {fdes.mean()}')
+        # print('mean minADE: ', ades.mean())
+        # print('mean minFDE: ', fdes.mean())
+        if measure_flops: print('[{}] model FLOPs for one batch (size {}): {:.3e}'.format(args.dataset.upper(), batch_size, flops_per_batch))
+
+        return errs
+
+    elif intervals is not None:
+        print(f'[{args.dataset}] Nth percentile: {intervals}')
+        performance_interval = np.percentile(fdes_flat, intervals)
+        print([performance_interval for performance_interval in performance_interval])
+
+        scores_list = [fdes_flat[batch_idxs == b] for b in range(batch_idxs[-1] + 1)]
+        np.save(data_to, np.array(scores_list, dtype=object), allow_pickle=True)
 
     if learnable_targets:
         target_logits_final = {}
@@ -495,6 +552,7 @@ def test_eth(epoch, model, loader, mode):
     th = get_th(opts, model)
     print('\n[{}][{}] Epoch {} th: {}'.format(args.dataset.upper(), 'TEST', epoch, th))
     print('[{}][{}] minADE/minFDE: {:.2f}/{:.2f}'.format(args.dataset.upper(), 'TEST', avg_meter['ade'] / avg_meter['counter'], avg_meter['fde'] / avg_meter['counter']))
+    if measure_flops: print('[{}] model FLOPs for one batch (size {}): {:.3e}'.format(args.dataset.upper(), batch_size, flops_per_batch))
     return avg_meter['fde'] / avg_meter['counter'], avg_meter['ade'] / avg_meter['counter']
 
 
@@ -524,6 +582,26 @@ if __name__ == "__main__":
             args.dataset = 'sdd'
             main_sdd(mode=mode)
         elif 'eth' in args.config:
-            for eth_dataset in ['eth', 'hotel', 'univ', 'zara1', 'zara2']:
+            dataset_errs = []
+            for eth_dataset in ['hotel', 'univ', 'zara1', 'zara2', 'eth']:
                 args.dataset = eth_dataset
-                main_eth(mode=mode)
+                errs = main_eth(mode=mode)
+                if len(dataset_errs) == 0:
+                    dataset_errs = errs
+                else:
+                    for i in range(len(errs)):
+                        dataset_errs[i] += errs[i]
+
+            dataset_errs = [dataset_err / 5 for dataset_err in dataset_errs]
+
+
+            s = ''
+            for topk in longtail:
+                for metric in ['ade', 'fde']:
+                    s = s + f'{topk}_{metric}  '
+            print(s)
+
+            s = ''
+            for dataset_err in dataset_errs:
+                s = s + f'{dataset_err:.3f}  '
+            print(s)

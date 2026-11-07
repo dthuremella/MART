@@ -632,8 +632,8 @@ class FMoETransformerMLPViz(FMoEViz):
         original_shape = inp.shape
         inp = inp.reshape(-1, self.d_model)
         output, gate_score, top_k_idx = super().forward(inp)
-        ret['gate_score'] = gate_score.reshape(original_shape[0], -1, 2)
-        ret['top_k_idx'] = top_k_idx.reshape(original_shape[0], -1, 2)
+        ret['gate_score'] = gate_score.reshape(original_shape[0], -1, TOPK)
+        ret['top_k_idx'] = top_k_idx.reshape(original_shape[0], -1, TOPK)
         return output.reshape(original_shape)
 
 class FMoEHarmonic(FMoE):

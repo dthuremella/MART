@@ -3,6 +3,7 @@ import random
 import argparse
 import time
 from csv import writer
+import pickle
 
 import torch
 import numpy as np
@@ -432,7 +433,7 @@ def test(epoch, model, loader):
                     scores[score_type][score_subtype] = torch.cat(scores[score_type][score_subtype], dim=1).cpu()
         xs, ys, ypreds = torch.cat(xs).cpu(), torch.cat(ys).cpu(), torch.cat(ypreds).cpu()
         data_dump = {'scores': scores, 'x': xs, 'y': ys, 'ypred': ypreds, 'target_logits_final': target_logits_final}
-        pickle.dump(data_dump, open('viz_scores_sdd_{}.pkl'.format(args.tag), 'wb'))
+        pickle.dump(data_dump, open('viz_scores_{}_{}.pkl'.format(args.dataset, args.tag), 'wb'))
 
     th = get_th(opts, model)
     print('\n[{}][{}] Epoch {} th: {}'.format(args.dataset.upper(), 'TEST', epoch, th))
