@@ -55,9 +55,10 @@ targets = None # [0.8, 0.1, 0.05, 0.03, 0.01, 0.01] # (kldiv) should sum to 1, s
 # targets = [1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6] # equal_init for targets
 
 # #### -kldiv-
-kldiv = 'x4'
-compute = 'lt32x' # equal, onetwo lt2x, lt4x, lt8x, lt10x
+kldiv = 'x2'
+compute = 'lt4x' # equal, onetwo lt2x, lt4x, lt8x, lt10x
 lt_type = 'onelinear' # onelinear linear, exp, ''
+harmonic_bias_loss = 10 # number (how much to weight it), or None
 
 if kldiv == 'x6':
     # original split
@@ -181,6 +182,7 @@ elif kldiv == 'x4':
 
 elif kldiv == 'x2':
     # x2 split
+    targets = [0.80, 0.20]
     if compute == 'equal':
         ratios = [1,1] #equal ratios
     elif compute == 'onetwo':
@@ -188,11 +190,48 @@ elif kldiv == 'x2':
     elif compute == 'lt3x':
         ratios = [1.0/2, 3] # lt ratios
     else:
-        ratios = None
-    targets = [0.80, 0.20]
+        v = np.array(targets).copy()
+        v = -v + v[0]               # flip so weight is opposite of freq, and add min value so it's > 0
+        min_ratio = 0.5 # the most common (80%) of examples have a hidden size that's half the original architecture's
+
+        if compute == 'lt10x':
+            ratios = [1.0/2, 1, 5, 10] # old lt ratios
+
+        # a is calculated such that np.dot(targets, ratios) == 1 (or as close as possible to 1)
+        else:
+            if compute == 'lt2x':
+                n = 2
+                a = 0.001                             
+            elif compute == 'lt4x':
+                n = 4
+                a = 2.68                              
+            elif compute == 'lt8x':
+                n = 8
+                a = 9.79  
+            elif compute == 'lt16x':
+                n = 16
+            elif compute == 'lt32x':
+                n = 32
+
+            x_pts = [0, len(targets)-1]
+            y_pts = [0.5, n]
+            x_vals = np.arange(0, len(targets))
+            if lt_type == 'linear':
+                y_vals = np.interp(x_vals, x_pts, y_pts)
+            elif lt_type == 'onelinear':
+                y_pts = [1, n]
+                y_vals = np.interp(x_vals, x_pts, y_pts)
+            elif lt_type == 'exp':
+                # 2. Fit a line to the logarithm of y
+                m, b_ln = np.polyfit(x_pts, np.log(y_pts), deg=1)
+                y_vals = np.exp(b_ln) * np.exp(m * x_vals)
+            else:                                    
+                scale = (n - min_ratio) / v[-1]
+                y_vals = scale * v**a + min_ratio    
+            ratios = list(y_vals)
+print('ratios: ', ratios, 'targets: ', targets)
 
 even_harmonic = True  # NUM_EXPERTS needs to be divisible by len(ratios) for this to work
-harmonic_bias_loss = 1 # number (how much to weight it), or None
 graded_bias_ratio = 1  ### set to 1 to remove
 
 # #### -kldiv-ltratio
