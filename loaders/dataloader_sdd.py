@@ -4,9 +4,10 @@ import torch
 from torch.utils.data import Dataset
 
 use_kalman = False
-no_stationary = True
 which_score = 'performance' 
 if '6nn' not in which_score: which_score = which_score + '_redoint'
+
+no_stationary = False
 
 class TrajectoryDataset(Dataset):
     def __init__(
