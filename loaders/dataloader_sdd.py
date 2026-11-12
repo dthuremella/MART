@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import Dataset
 
 use_kalman = False
+no_stationary = True
 which_score = 'performance' 
 if '6nn' not in which_score: which_score = which_score + '_redoint'
 
@@ -35,6 +36,11 @@ class TrajectoryDataset(Dataset):
                 self.traj.append(t)
         else:
             self.traj = traj_tmp
+
+        if no_stationary:
+            non_stationary = [np.any(np.linalg.norm(
+                                scenario[:,1:,:] - scenario[:,:-1,:], axis=-1) > 0) for scenario in self.traj]
+            self.traj = [t for t, keep in zip(self.traj, non_stationary) if keep]
 
         if use_kalman:
             data_root_kalman = './datasets/stanford/sdd_{}_{}.npy'.format(mode, which_score)
