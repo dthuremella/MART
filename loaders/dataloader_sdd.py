@@ -37,7 +37,7 @@ class TrajectoryDataset(Dataset):
         else:
             self.traj = traj_tmp
 
-        if no_stationary:
+        if no_stationary and mode =='train':
             non_stationary = [np.any(np.linalg.norm(
                                 scenario[:,1:,:] - scenario[:,:-1,:], axis=-1) > 0) for scenario in self.traj]
             self.traj = [t for t, keep in zip(self.traj, non_stationary) if keep]
