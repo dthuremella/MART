@@ -9,6 +9,17 @@ if '6nn' not in which_score: which_score = which_score + '_redoint'
 
 no_stationary = False
 
+augment = True
+
+def rot(t, theta, origin=np.array([1990.0/2, 1990.0/2])):
+    t_trans = t - origin
+    dx = t_trans[...,0]
+    dy = t_trans[...,1]
+    x_rot = dx * np.cos(theta) + dy * np.sin(theta)
+    y_rot = -dx * np.sin(theta) + dy * np.cos(theta)
+    rotated_t = np.stack((x_rot, y_rot), axis=-1) + origin
+    return rotated_t
+
 class TrajectoryDataset(Dataset):
     def __init__(
         self, obs_len=8, pred_len=12, mode='train', scale=10, inputs=None
@@ -46,6 +57,22 @@ class TrajectoryDataset(Dataset):
         if use_kalman:
             data_root_kalman = './datasets/stanford/sdd_{}_{}.npy'.format(mode, which_score)
             self.kalman_score = np.load(data_root_kalman, allow_pickle=True)
+
+        if augment and mode == 'train':
+            # data_root_kalman = './datasets/stanford/sdd_{}_{}.npy'.format(mode, which_score)
+            # kalman_score = np.load(data_root_kalman, allow_pickle=True)
+            traj_aug = []
+            for t in self.traj:
+                traj_aug.append(t)
+                for i in range(2): # flip horiz and vert
+                    s = t.copy()
+                    s[:,:,i] = -s[:,:,i] + 1990 # max pixel value (in both x and y)
+                    traj_aug.append(s)
+                for i in range(1,4): # rotate by 90, 180, 270
+                    s = t.copy()
+                    theta = torch.pi / 2 * i
+                    traj_aug.append(rot(s, theta))
+            self.traj = traj_aug
         
         
     def __len__(self):
